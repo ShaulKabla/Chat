@@ -35,6 +35,8 @@ export default function App() {
   const [stats, setStats] = useState({ connectedUsers: 0, waitingUsers: 0, reports: 0 });
   const [reports, setReports] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [maintenance, setMaintenance] = useState({ enabled: false, message: "" });
+  const [maintenanceMessage, setMaintenanceMessage] = useState("");
   const [error, setError] = useState("");
   const [hasLoaded, setHasLoaded] = useState(false);
   const [isCompactHeader, setIsCompactHeader] = useState(false);
@@ -62,6 +64,15 @@ export default function App() {
     } catch (err) {
       setError(err.message);
     }
+    const [statsRes, reportsRes, maintenanceRes] = await Promise.all([
+      fetchJson(`${API_BASE}/api/admin/stats`, { headers }),
+      fetchJson(`${API_BASE}/api/admin/reported`, { headers }),
+      fetchJson(`${API_BASE}/api/maintenance`, { headers })
+    ]);
+    setStats(statsRes);
+    setReports(reportsRes.reports || []);
+    setMaintenance(maintenanceRes);
+    setMaintenanceMessage(maintenanceRes.message || "");
   };
 
   useEffect(() => {
@@ -148,6 +159,24 @@ export default function App() {
     } finally {
       socketRef.current?.disconnect();
       setToken("");
+    }
+  };
+
+  const handleMaintenanceUpdate = async (enabled) => {
+    setError("");
+    try {
+      const data = await fetchJson(`${API_BASE}/api/admin/maintenance`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          enabled,
+          message: maintenanceMessage
+        })
+      });
+      setMaintenance(data);
+      setMaintenanceMessage(data.message || "");
+    } catch (err) {
+      setError(err.message);
     }
   };
 
@@ -280,6 +309,35 @@ export default function App() {
             <SkeletonCard />
           </>
         )}
+      </div>
+
+      <div className="bg-slate-900 rounded-2xl p-6 mb-8">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">Maintenance Mode</h2>
+            <p className="text-sm text-slate-400">
+              Toggle maintenance to gracefully inform mobile users of updates.
+            </p>
+          </div>
+          <button
+            onClick={() => handleMaintenanceUpdate(!maintenance.enabled)}
+            className={`px-4 py-2 rounded-lg font-semibold ${
+              maintenance.enabled
+                ? "bg-amber-500 hover:bg-amber-400"
+                : "bg-emerald-500 hover:bg-emerald-400"
+            }`}
+          >
+            {maintenance.enabled ? "Disable Maintenance" : "Enable Maintenance"}
+          </button>
+        </div>
+        <div className="mt-4">
+          <label className="text-sm text-slate-300">Maintenance message</label>
+          <textarea
+            className="mt-2 w-full rounded-lg bg-slate-800 border-slate-700 min-h-[96px]"
+            value={maintenanceMessage}
+            onChange={(event) => setMaintenanceMessage(event.target.value)}
+          />
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
