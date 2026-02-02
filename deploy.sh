@@ -5,17 +5,20 @@ COMPOSE_COMMAND=${COMPOSE_COMMAND:-"docker compose"}
 HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-180}
 HEALTH_POLL_INTERVAL=${HEALTH_POLL_INTERVAL:-3}
 
-SERVICES=(
+CORE_SERVICES=(
   postgres
   redis
   backend
   admin-panel
+)
+
+EDGE_SERVICES=(
   nginx
   certbot
 )
 
 echo "Starting deployment..."
-$COMPOSE_COMMAND up -d --build
+$COMPOSE_COMMAND up -d --build "${CORE_SERVICES[@]}"
 
 check_service() {
   local service=$1
@@ -57,7 +60,14 @@ check_service() {
   return 1
 }
 
-for service in "${SERVICES[@]}"; do
+for service in "${CORE_SERVICES[@]}"; do
+  check_service "$service"
+done
+
+echo "Warm-up complete. Switching edge traffic..."
+$COMPOSE_COMMAND up -d "${EDGE_SERVICES[@]}"
+
+for service in "${EDGE_SERVICES[@]}"; do
   check_service "$service"
 done
 

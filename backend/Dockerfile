@@ -8,6 +8,12 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
 COPY server.js ./
+COPY controllers ./controllers
+COPY middleware ./middleware
+COPY services ./services
+COPY healthcheck.sh ./healthcheck.sh
+
+RUN chmod +x /app/healthcheck.sh
 
 USER app
 
