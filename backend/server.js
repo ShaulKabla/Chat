@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const { createAdapter } = require("@socket.io/redis-adapter");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
@@ -25,6 +26,7 @@ const adminNamespace = io.of("/admin");
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
 
 const limiter = rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000),
@@ -34,6 +36,7 @@ const limiter = rateLimit({
 });
 
 app.use(limiter);
+app.use("/api", maintenanceGuard);
 
 const pool = new Pool({
   host: process.env.POSTGRES_HOST,
@@ -45,16 +48,25 @@ const pool = new Pool({
 
 const redisClient = createClient({ url: process.env.REDIS_URL });
 redisClient.on("error", (err) => console.error("Redis error", err));
-redisClient.connect().catch((err) => console.error("Redis connect error", err));
+const pubClient = createClient({ url: process.env.REDIS_URL });
+const subClient = pubClient.duplicate();
 
-const waitingQueue = [];
-const socketToUser = new Map();
-const userToSocket = new Map();
-const pairedUsers = new Map();
-const blockedUsers = new Map();
+const connectRedis = async () => {
+  await redisClient.connect();
+  await pubClient.connect();
+  await subClient.connect();
+  io.adapter(createAdapter(pubClient, subClient));
+};
 
 const logBuffer = [];
 const logBufferSize = Number(process.env.LOG_BUFFER_SIZE || 200);
+
+const maintenanceDefaults = {
+  enabled: "false",
+  message:
+    process.env.MAINTENANCE_MESSAGE ||
+    "We are performing scheduled maintenance. Please try again shortly."
+};
 
 const addLog = (level, message, meta = {}) => {
   const entry = {
@@ -75,6 +87,74 @@ const addLog = (level, message, meta = {}) => {
   } else {
     console.log(output, meta);
   }
+};
+
+const ensureMaintenanceDefaults = async () => {
+  const existing = await redisClient.hGetAll("maintenance");
+  if (!existing.enabled) {
+    await redisClient.hSet("maintenance", maintenanceDefaults);
+  }
+};
+
+const getMaintenanceState = async () => {
+  const data = await redisClient.hGetAll("maintenance");
+  return {
+    enabled: data.enabled === "true",
+    message: data.message || maintenanceDefaults.message
+  };
+};
+
+const setMaintenanceState = async ({ enabled, message }) => {
+  await redisClient.hSet("maintenance", {
+    enabled: String(Boolean(enabled)),
+    message: message || maintenanceDefaults.message
+  });
+};
+
+const setSocketForUser = async (userId, socketId) => {
+  await redisClient.hSet("user_sockets", userId, socketId);
+  await redisClient.hSet("socket_users", socketId, userId);
+};
+
+const getSocketForUser = async (userId) => redisClient.hGet("user_sockets", userId);
+
+const removeSocket = async (socketId) => {
+  const userId = await redisClient.hGet("socket_users", socketId);
+  if (!userId) return null;
+  await redisClient.hDel("socket_users", socketId);
+  await redisClient.hDel("user_sockets", userId);
+  return userId;
+};
+
+const removeFromQueue = async (userId) => {
+  await redisClient.lRem("waiting_queue", 0, userId);
+};
+
+const addToQueue = async (userId) => {
+  await removeFromQueue(userId);
+  await redisClient.rPush("waiting_queue", userId);
+};
+
+const setPairing = async (userA, userB) => {
+  await redisClient.hSet("pairings", userA, userB);
+  await redisClient.hSet("pairings", userB, userA);
+};
+
+const clearPairing = async (userId) => {
+  const partnerId = await redisClient.hGet("pairings", userId);
+  if (partnerId) {
+    await redisClient.hDel("pairings", partnerId);
+  }
+  await redisClient.hDel("pairings", userId);
+  return partnerId;
+};
+
+const isBlockedPair = async (userA, userB) => {
+  const [blockedA, blockedB] = await Promise.all([
+    redisClient.sIsMember(`blocked:${userA}`, userB),
+    redisClient.sIsMember(`blocked:${userB}`, userA)
+  ]);
+  return blockedA === 1 || blockedB === 1;
 };
 
 const initDb = async () => {
@@ -139,6 +219,13 @@ const ensureAuth = async (req, res, next) => {
   }
 };
 
+const ensureAdmin = (req, res, next) => {
+  if (req.user?.type !== "admin") {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  return next();
+};
+
 const ensureNotBanned = async (req, res, next) => {
   if (req.user?.sub && (await isBannedUser(req.user.sub))) {
     return res.status(403).json({ error: "User is banned" });
@@ -146,64 +233,45 @@ const ensureNotBanned = async (req, res, next) => {
   return next();
 };
 
-const removeFromQueue = (userId) => {
-  const index = waitingQueue.indexOf(userId);
-  if (index >= 0) {
-    waitingQueue.splice(index, 1);
+const maintenanceGuard = async (req, res, next) => {
+  if (req.path.startsWith("/admin") || req.path === "/config" || req.path === "/maintenance") {
+    return next();
   }
-  redisClient.sRem("waiting_queue", userId).catch(() => undefined);
-};
-
-const setPairing = (userA, userB) => {
-  pairedUsers.set(userA, userB);
-  pairedUsers.set(userB, userA);
-  redisClient.hSet("pairings", userA, userB).catch(() => undefined);
-  redisClient.hSet("pairings", userB, userA).catch(() => undefined);
-};
-
-const clearPairing = (userId) => {
-  const partnerId = pairedUsers.get(userId);
-  if (partnerId) {
-    pairedUsers.delete(partnerId);
-    redisClient.hDel("pairings", partnerId).catch(() => undefined);
+  const state = await getMaintenanceState();
+  if (state.enabled) {
+    return res.status(503).json({ error: "maintenance", message: state.message });
   }
-  pairedUsers.delete(userId);
-  redisClient.hDel("pairings", userId).catch(() => undefined);
+  return next();
 };
 
-const isBlockedPair = (userA, userB) => {
-  const blockedA = blockedUsers.get(userA) || new Set();
-  const blockedB = blockedUsers.get(userB) || new Set();
-  return blockedA.has(userB) || blockedB.has(userA);
-};
-
-const pairUsers = (userId) => {
-  removeFromQueue(userId);
+const pairUsers = async (userId) => {
+  await removeFromQueue(userId);
+  const waiting = await redisClient.lRange("waiting_queue", 0, -1);
   let partnerId = null;
-  for (let i = 0; i < waitingQueue.length; i += 1) {
-    const candidate = waitingQueue[i];
-    if (!isBlockedPair(userId, candidate)) {
+  for (const candidate of waiting) {
+    if (candidate === userId) continue;
+    if (!(await isBlockedPair(userId, candidate))) {
       partnerId = candidate;
-      waitingQueue.splice(i, 1);
-      redisClient.sRem("waiting_queue", candidate).catch(() => undefined);
+      await redisClient.lRem("waiting_queue", 0, candidate);
       break;
     }
   }
 
   if (!partnerId) {
-    waitingQueue.push(userId);
-    redisClient.sAdd("waiting_queue", userId).catch(() => undefined);
+    await addToQueue(userId);
     return;
   }
 
-  setPairing(userId, partnerId);
-  const socketA = userToSocket.get(userId);
-  const socketB = userToSocket.get(partnerId);
+  await setPairing(userId, partnerId);
+  const [socketA, socketB] = await Promise.all([
+    getSocketForUser(userId),
+    getSocketForUser(partnerId)
+  ]);
   if (socketA) {
-    socketA.emit("paired", { partnerId });
+    io.to(socketA).emit("paired", { partnerId });
   }
   if (socketB) {
-    socketB.emit("paired", { partnerId: userId });
+    io.to(socketB).emit("paired", { partnerId: userId });
   }
   addLog("info", "Users paired", { userId, partnerId });
 };
@@ -225,47 +293,50 @@ const resolveUserId = async (socket) => {
 
 io.on("connection", async (socket) => {
   try {
+    const maintenance = await getMaintenanceState();
+    if (maintenance.enabled) {
+      socket.emit("maintenance", { message: maintenance.message });
+      socket.disconnect(true);
+      return;
+    }
+
     const userId = await resolveUserId(socket);
-    socketToUser.set(socket.id, userId);
-    userToSocket.set(userId, socket);
-    blockedUsers.set(userId, new Set());
+    await setSocketForUser(userId, socket.id);
 
     socket.emit("user:id", { userId });
-    pairUsers(userId);
+    await pairUsers(userId);
     addLog("info", "User connected", { userId });
 
-    socket.on("chat:message", (payload) => {
-      const partnerId = pairedUsers.get(userId);
+    socket.on("chat:message", async (payload) => {
+      const partnerId = await redisClient.hGet("pairings", userId);
       if (!partnerId) {
         return;
       }
-      const partnerSocket = userToSocket.get(partnerId);
-      if (!partnerSocket) {
+      const partnerSocketId = await getSocketForUser(partnerId);
+      if (!partnerSocketId) {
         return;
       }
-      partnerSocket.emit("chat:message", {
+      io.to(partnerSocketId).emit("chat:message", {
         from: userId,
         message: String(payload?.message || "")
       });
     });
 
-    socket.on("user:block", (payload) => {
+    socket.on("user:block", async (payload) => {
       const blockedId = String(payload?.blockedUserId || "");
       if (!blockedId) {
         return;
       }
-      const blockSet = blockedUsers.get(userId) || new Set();
-      blockSet.add(blockedId);
-      blockedUsers.set(userId, blockSet);
+      await redisClient.sAdd(`blocked:${userId}`, blockedId);
 
-      const partnerId = pairedUsers.get(userId);
+      const partnerId = await redisClient.hGet("pairings", userId);
       if (partnerId === blockedId) {
-        clearPairing(userId);
-        const partnerSocket = userToSocket.get(partnerId);
-        if (partnerSocket) {
-          partnerSocket.emit("partner:disconnected", { reason: "blocked" });
+        await clearPairing(userId);
+        const partnerSocketId = await getSocketForUser(partnerId);
+        if (partnerSocketId) {
+          io.to(partnerSocketId).emit("partner:disconnected", { reason: "blocked" });
         }
-        pairUsers(userId);
+        await pairUsers(userId);
       }
     });
 
@@ -288,23 +359,20 @@ io.on("connection", async (socket) => {
       }
     });
 
-    socket.on("disconnect", () => {
-      const disconnectedId = socketToUser.get(socket.id);
+    socket.on("disconnect", async () => {
+      const disconnectedId = await removeSocket(socket.id);
       if (!disconnectedId) {
         return;
       }
-      socketToUser.delete(socket.id);
-      userToSocket.delete(disconnectedId);
-      blockedUsers.delete(disconnectedId);
-      removeFromQueue(disconnectedId);
+      await redisClient.del(`blocked:${disconnectedId}`);
+      await removeFromQueue(disconnectedId);
 
-      const partnerId = pairedUsers.get(disconnectedId);
+      const partnerId = await clearPairing(disconnectedId);
       if (partnerId) {
-        clearPairing(disconnectedId);
-        const partnerSocket = userToSocket.get(partnerId);
-        if (partnerSocket) {
-          partnerSocket.emit("partner:disconnected", { reason: "left" });
-          pairUsers(partnerId);
+        const partnerSocketId = await getSocketForUser(partnerId);
+        if (partnerSocketId) {
+          io.to(partnerSocketId).emit("partner:disconnected", { reason: "left" });
+          await pairUsers(partnerId);
         }
       }
       addLog("info", "User disconnected", { userId: disconnectedId });
@@ -344,9 +412,11 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-app.get("/api/config", (req, res) => {
+app.get("/api/config", async (req, res) => {
+  const maintenance = await getMaintenanceState();
   res.json({
     version: process.env.APP_VERSION || "2.0.0",
+    maintenance,
     features: {
       reporting: true,
       blocking: true,
@@ -354,6 +424,11 @@ app.get("/api/config", (req, res) => {
       logs: true
     }
   });
+});
+
+app.get("/api/maintenance", async (req, res) => {
+  const maintenance = await getMaintenanceState();
+  res.json(maintenance);
 });
 
 app.post("/api/auth/anonymous", async (req, res) => {
@@ -419,7 +494,7 @@ app.post("/api/admin/login", async (req, res) => {
   return res.json({ token });
 });
 
-app.post("/api/admin/logout", ensureAuth, async (req, res) => {
+app.post("/api/admin/logout", ensureAuth, ensureAdmin, async (req, res) => {
   if (!req.user?.jti) {
     return res.status(400).json({ error: "Missing token id" });
   }
@@ -427,12 +502,16 @@ app.post("/api/admin/logout", ensureAuth, async (req, res) => {
   return res.json({ status: "ok" });
 });
 
-app.get("/api/admin/stats", ensureAuth, async (req, res) => {
+app.get("/api/admin/stats", ensureAuth, ensureAdmin, async (req, res) => {
   try {
-    const reportCount = await pool.query("SELECT COUNT(*) FROM reports");
+    const [reportCount, connectedUsers, waitingUsers] = await Promise.all([
+      pool.query("SELECT COUNT(*) FROM reports"),
+      redisClient.hLen("user_sockets"),
+      redisClient.lLen("waiting_queue")
+    ]);
     return res.json({
-      connectedUsers: userToSocket.size,
-      waitingUsers: waitingQueue.length,
+      connectedUsers: Number(connectedUsers || 0),
+      waitingUsers: Number(waitingUsers || 0),
       reports: Number(reportCount.rows[0].count || 0)
     });
   } catch (err) {
@@ -441,7 +520,7 @@ app.get("/api/admin/stats", ensureAuth, async (req, res) => {
   }
 });
 
-app.get("/api/admin/reported", ensureAuth, async (req, res) => {
+app.get("/api/admin/reported", ensureAuth, ensureAdmin, async (req, res) => {
   try {
     const { rows } = await pool.query(
       "SELECT id, reporter_id, reported_id, reason, created_at FROM reports ORDER BY created_at DESC LIMIT 100"
@@ -453,7 +532,7 @@ app.get("/api/admin/reported", ensureAuth, async (req, res) => {
   }
 });
 
-app.post("/api/admin/ban", ensureAuth, async (req, res) => {
+app.post("/api/admin/ban", ensureAuth, ensureAdmin, async (req, res) => {
   const { userId, reason } = req.body;
   if (!userId) {
     return res.status(400).json({ error: "Missing userId" });
@@ -464,10 +543,10 @@ app.post("/api/admin/ban", ensureAuth, async (req, res) => {
       [userId, reason || "admin"]
     );
     await redisClient.sAdd("banned_users", userId);
-    const socket = userToSocket.get(userId);
-    if (socket) {
-      socket.emit("banned", { reason: reason || "admin" });
-      socket.disconnect(true);
+    const socketId = await getSocketForUser(userId);
+    if (socketId) {
+      io.to(socketId).emit("banned", { reason: reason || "admin" });
+      io.in(socketId).disconnectSockets(true);
     }
     addLog("info", "User banned", { userId, reason });
     return res.json({ status: "ok" });
@@ -477,7 +556,26 @@ app.post("/api/admin/ban", ensureAuth, async (req, res) => {
   }
 });
 
-const port = Number(process.env.PORT || 3000);
-server.listen(port, () => {
-  addLog("info", "Backend listening", { port });
+app.post("/api/admin/maintenance", ensureAuth, ensureAdmin, async (req, res) => {
+  const { enabled, message } = req.body || {};
+  await setMaintenanceState({ enabled, message });
+  const maintenance = await getMaintenanceState();
+  addLog("info", "Maintenance mode updated", maintenance);
+  return res.json(maintenance);
 });
+
+const startServer = async () => {
+  try {
+    await connectRedis();
+    await ensureMaintenanceDefaults();
+    const port = Number(process.env.PORT || 3000);
+    server.listen(port, () => {
+      addLog("info", "Backend listening", { port });
+    });
+  } catch (err) {
+    console.error("Failed to start server", err);
+    process.exit(1);
+  }
+};
+
+startServer();

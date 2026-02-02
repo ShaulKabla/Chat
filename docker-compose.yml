@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:16
-    container_name: anonchat_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -14,10 +13,11 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - private
 
   redis:
     image: redis:7
-    container_name: anonchat_redis
     volumes:
       - redis_data:/data
     healthcheck:
@@ -26,13 +26,14 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - private
 
   backend:
     build:
       context: ./backend
-    container_name: anonchat_backend
     env_file:
-      - ./backend/.env
+      - ./.env
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,11 +45,12 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - private
 
   admin-panel:
     build:
       context: ./admin-panel
-    container_name: anonchat_admin
     depends_on:
       backend:
         condition: service_healthy
@@ -58,10 +60,11 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - private
 
   nginx:
     image: nginx:1.27-alpine
-    container_name: anonchat_proxy
     depends_on:
       admin-panel:
         condition: service_healthy
@@ -74,43 +77,36 @@ services:
       - ./nginx/templates:/etc/nginx/templates:ro
       - ./certbot/www:/var/www/certbot
       - ./certbot/conf:/etc/letsencrypt
-    environment:
-      DOMAIN: ${DOMAIN}
+    env_file:
+      - ./.env
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/health"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - public
+      - private
 
   certbot:
     image: certbot/certbot
-    container_name: anonchat_certbot
     volumes:
       - ./certbot/www:/var/www/certbot
       - ./certbot/conf:/etc/letsencrypt
     entrypoint: >
       /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h; done"
     restart: unless-stopped
-
-  db-backup:
-    image: prodrigestivill/postgres-backup-local:16
-    container_name: anonchat_backup
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_EXTRA_OPTS: "-Z6 --schema=public --blobs"
-      SCHEDULE: ${BACKUP_SCHEDULE}
-      BACKUP_DIR: /backups
-    volumes:
-      - /opt/anon-chat-pro/backups:/backups
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - public
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  public:
+    driver: bridge
+  private:
+    driver: bridge
+    internal: true
