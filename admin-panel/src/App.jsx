@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import GlassPanel from "./components/ui/GlassPanel";
+import GradientButton from "./components/ui/GradientButton";
+import StatCard from "./components/ui/StatCard";
+import OnboardingCarousel from "./components/ui/OnboardingCarousel";
+import EmptyState, { RadarPulse, SuccessCheck } from "./components/ui/EmptyState";
+import MessageBubble from "./components/ui/MessageBubble";
+import { SkeletonCard, SkeletonLine } from "./components/ui/Skeleton";
+import { useHaptics } from "./components/ui/useHaptics";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || window.location.origin;
 
@@ -28,7 +36,10 @@ export default function App() {
   const [reports, setReports] = useState([]);
   const [logs, setLogs] = useState([]);
   const [error, setError] = useState("");
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [isCompactHeader, setIsCompactHeader] = useState(false);
   const socketRef = useRef(null);
+  const { trigger } = useHaptics();
 
   const headers = useMemo(
     () => ({
@@ -40,12 +51,17 @@ export default function App() {
 
   const loadData = async () => {
     if (!token) return;
-    const [statsRes, reportsRes] = await Promise.all([
-      fetchJson(`${API_BASE}/api/admin/stats`, { headers }),
-      fetchJson(`${API_BASE}/api/admin/reported`, { headers })
-    ]);
-    setStats(statsRes);
-    setReports(reportsRes.reports || []);
+    try {
+      const [statsRes, reportsRes] = await Promise.all([
+        fetchJson(`${API_BASE}/api/admin/stats`, { headers }),
+        fetchJson(`${API_BASE}/api/admin/reported`, { headers })
+      ]);
+      setStats(statsRes);
+      setReports(reportsRes.reports || []);
+      setHasLoaded(true);
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   useEffect(() => {
@@ -80,6 +96,14 @@ export default function App() {
     };
   }, [token]);
 
+  useEffect(() => {
+    const handleScroll = () => {
+      setIsCompactHeader(window.scrollY > 12);
+    };
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
   const handleLogin = async (event) => {
     event.preventDefault();
     setError("");
@@ -96,6 +120,7 @@ export default function App() {
   };
 
   const handleBan = async (userId) => {
+    trigger();
     setError("");
     try {
       await fetchJson(`${API_BASE}/api/admin/ban`, {
@@ -110,6 +135,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    trigger();
     try {
       if (token) {
         await fetchJson(`${API_BASE}/api/admin/logout`, {
@@ -127,88 +153,160 @@ export default function App() {
 
   if (!token) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6">
-        <form
-          onSubmit={handleLogin}
-          className="bg-slate-900 p-8 rounded-2xl shadow-xl w-full max-w-sm space-y-4"
-        >
-          <h1 className="text-xl font-semibold">Admin Login</h1>
+      <div className="min-h-screen grid gap-8 lg:grid-cols-[1.05fr_0.95fr] items-center p-6">
+        <GlassPanel className="p-8 space-y-6">
+          <div className="space-y-2">
+            <p className="text-xs uppercase tracking-[0.4em] text-emerald-400">
+              Anon Chat Admin
+            </p>
+            <h1 className="text-3xl font-semibold text-slate-50">
+              Secure access to the live moderation suite.
+            </h1>
+            <p className="text-sm text-slate-400">
+              Authenticate to monitor real-time connections, reports, and safety signals.
+            </p>
+          </div>
           {error && <p className="text-red-400 text-sm">{error}</p>}
-          <div>
-            <label className="text-sm">Username</label>
-            <input
-              className="mt-1 w-full rounded-lg bg-slate-800 border-slate-700"
-              value={credentials.username}
-              onChange={(event) =>
-                setCredentials((prev) => ({ ...prev, username: event.target.value }))
-              }
-            />
-          </div>
-          <div>
-            <label className="text-sm">Password</label>
-            <input
-              type="password"
-              className="mt-1 w-full rounded-lg bg-slate-800 border-slate-700"
-              value={credentials.password}
-              onChange={(event) =>
-                setCredentials((prev) => ({ ...prev, password: event.target.value }))
-              }
-            />
-          </div>
-          <button
-            type="submit"
-            className="w-full bg-indigo-500 hover:bg-indigo-400 transition px-4 py-2 rounded-lg font-semibold"
-          >
-            Sign in
-          </button>
-        </form>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="text-xs uppercase tracking-[0.3em] text-slate-400">
+                Username
+              </label>
+              <input
+                className="mt-2 w-full rounded-2xl bg-slate-900/70 border border-slate-800 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                value={credentials.username}
+                onChange={(event) =>
+                  setCredentials((prev) => ({ ...prev, username: event.target.value }))
+                }
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase tracking-[0.3em] text-slate-400">
+                Password
+              </label>
+              <input
+                type="password"
+                className="mt-2 w-full rounded-2xl bg-slate-900/70 border border-slate-800 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                value={credentials.password}
+                onChange={(event) =>
+                  setCredentials((prev) => ({ ...prev, password: event.target.value }))
+                }
+              />
+            </div>
+            <GradientButton type="submit" className="w-full justify-center">
+              Sign in
+            </GradientButton>
+          </form>
+        </GlassPanel>
+        <div className="space-y-6">
+          <OnboardingCarousel />
+          <GlassPanel className="p-6 space-y-4">
+            <div className="flex items-center gap-4">
+              <RadarPulse />
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
+                  Searching
+                </p>
+                <p className="text-sm text-slate-300">
+                  Pairing users in the anonymous queue.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <SuccessCheck />
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
+                  Verified
+                </p>
+                <p className="text-sm text-slate-300">
+                  Reports reviewed with instant action states.
+                </p>
+              </div>
+            </div>
+          </GlassPanel>
+        </div>
       </div>
     );
   }
 
+  const formattedLogs = logs.map((entry) => ({
+    ...entry,
+    meta: entry.meta ? formatLogMeta(entry.meta) : ""
+  }));
+
   return (
-    <div className="min-h-screen p-6">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Anon Chat Admin</h1>
-          <p className="text-slate-400">Live monitoring and moderation.</p>
+    <div className="min-h-screen p-6 space-y-8">
+      <div
+        className={`compact-header sticky top-0 z-10 px-6 py-4 rounded-3xl bg-black/40 border border-slate-800/60 backdrop-blur-xl ${
+          isCompactHeader ? "compact" : ""
+        }`}
+      >
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.4em] text-emerald-400">
+              Control Center
+            </p>
+            <h1 className="text-2xl font-semibold">Anon Chat Admin</h1>
+            <p className="text-slate-400">Live monitoring and premium safety controls.</p>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="text-sm text-slate-300 hover:text-emerald-300 transition"
+          >
+            Log out
+          </button>
         </div>
-        <button
-          onClick={handleLogout}
-          className="text-sm text-slate-300 hover:text-white"
-        >
-          Log out
-        </button>
       </div>
 
-      {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+      {error && <p className="text-red-400 text-sm">{error}</p>}
 
-      <div className="grid gap-4 md:grid-cols-3 mb-8">
-        <div className="bg-slate-900 rounded-2xl p-5">
-          <p className="text-slate-400 text-sm">Connected Users</p>
-          <p className="text-3xl font-semibold">{stats.connectedUsers}</p>
-        </div>
-        <div className="bg-slate-900 rounded-2xl p-5">
-          <p className="text-slate-400 text-sm">Waiting Users</p>
-          <p className="text-3xl font-semibold">{stats.waitingUsers}</p>
-        </div>
-        <div className="bg-slate-900 rounded-2xl p-5">
-          <p className="text-slate-400 text-sm">Reports</p>
-          <p className="text-3xl font-semibold">{stats.reports}</p>
-        </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        {hasLoaded ? (
+          <>
+            <StatCard label="Connected" value={stats.connectedUsers} hint="Live sessions">
+              <SuccessCheck />
+            </StatCard>
+            <StatCard label="Queue" value={stats.waitingUsers} hint="Searching now">
+              {stats.waitingUsers > 0 ? <RadarPulse /> : <SuccessCheck />}
+            </StatCard>
+            <StatCard label="Reports" value={stats.reports} hint="Escalations">
+              {stats.reports === 0 ? <SuccessCheck /> : <RadarPulse />}
+            </StatCard>
+          </>
+        ) : (
+          <>
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <div className="bg-slate-900 rounded-2xl p-6">
-          <h2 className="text-lg font-semibold mb-4">Reported Users</h2>
+        <GlassPanel className="p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Reported Users</h2>
+            <span className="text-xs uppercase tracking-[0.3em] text-slate-500">
+              Moderation
+            </span>
+          </div>
           <div className="space-y-3">
-            {reports.length === 0 && (
-              <p className="text-slate-400 text-sm">No reports yet.</p>
+            {!hasLoaded && (
+              <div className="space-y-3">
+                <SkeletonLine className="w-full" />
+                <SkeletonLine className="w-4/5" />
+              </div>
+            )}
+            {hasLoaded && reports.length === 0 && (
+              <EmptyState
+                title="No Reports"
+                subtitle="Everything is calm in the queue."
+              />
             )}
             {reports.map((report) => (
               <div
                 key={report.id}
-                className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-slate-800 rounded-xl p-4"
+                className="glass-panel p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4 pop-in"
               >
                 <div>
                   <p className="text-sm text-slate-300">
@@ -216,42 +314,46 @@ export default function App() {
                   </p>
                   <p className="text-xs text-slate-400">Reason: {report.reason}</p>
                   <p className="text-xs text-slate-500">
-                    Reporter: {report.reporter_id} • {new Date(report.created_at).toLocaleString()}
+                    Reporter: {report.reporter_id} •{" "}
+                    {new Date(report.created_at).toLocaleString()}
                   </p>
                 </div>
                 <button
                   onClick={() => handleBan(report.reported_id)}
-                  className="bg-red-500 hover:bg-red-400 transition px-4 py-2 rounded-lg text-sm font-semibold"
+                  className="px-4 py-2 rounded-full bg-red-500/80 hover:bg-red-500 text-sm font-semibold transition"
                 >
                   Ban
                 </button>
               </div>
             ))}
           </div>
-        </div>
+        </GlassPanel>
 
-        <div className="bg-slate-900 rounded-2xl p-6">
-          <h2 className="text-lg font-semibold mb-4">System Logs</h2>
-          <div className="h-96 overflow-y-auto space-y-3 pr-2">
-            {logs.length === 0 && (
-              <p className="text-slate-400 text-sm">No logs yet.</p>
+        <GlassPanel className="p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">System Logs</h2>
+            <span className="text-xs uppercase tracking-[0.3em] text-slate-500">
+              Live Feed
+            </span>
+          </div>
+          <div className="h-96 overflow-y-auto space-y-4 pr-2">
+            {!hasLoaded && (
+              <div className="space-y-3">
+                <SkeletonLine className="w-full" />
+                <SkeletonLine className="w-4/5" />
+                <SkeletonLine className="w-3/5" />
+              </div>
             )}
-            {logs.map((entry) => (
-              <div key={entry.id} className="bg-slate-800 rounded-xl p-4">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>{new Date(entry.timestamp).toLocaleString()}</span>
-                  <span className="uppercase">{entry.level}</span>
-                </div>
-                <p className="text-sm text-slate-200 mt-2">{entry.message}</p>
-                {entry.meta && (
-                  <p className="text-xs text-slate-500 mt-2 break-words">
-                    {formatLogMeta(entry.meta)}
-                  </p>
-                )}
+            {hasLoaded && formattedLogs.length === 0 && (
+              <EmptyState title="Quiet" subtitle="No logs streaming right now." />
+            )}
+            {formattedLogs.map((entry) => (
+              <div key={entry.id} className="pop-in">
+                <MessageBubble entry={entry} />
               </div>
             ))}
           </div>
-        </div>
+        </GlassPanel>
       </div>
     </div>
   );
