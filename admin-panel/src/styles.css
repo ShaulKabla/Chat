@@ -1,7 +1,301 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  color-scheme: dark;
+  --color-obsidian: #050505;
+  --color-emerald: #00e676;
+  --color-slate: #0b0f1a;
+  --color-glass: rgba(255, 255, 255, 0.08);
+  --color-glass-strong: rgba(255, 255, 255, 0.14);
+  --color-border: rgba(148, 163, 184, 0.2);
+  --color-glow: rgba(0, 230, 118, 0.35);
+  --color-shadow: rgba(3, 7, 18, 0.6);
+  --font-base: "Inter", sans-serif;
+}
+
 body {
-  font-family: "Inter", sans-serif;
+  font-family: var(--font-base);
+  background: radial-gradient(circle at top, rgba(0, 230, 118, 0.08), transparent 55%),
+    radial-gradient(circle at 20% 20%, rgba(148, 163, 184, 0.12), transparent 50%),
+    var(--color-obsidian);
+  color: #e2e8f0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.glass-panel {
+  background: var(--color-glass);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 24px 60px var(--color-shadow);
+  backdrop-filter: blur(22px);
+  border-radius: 1.5rem;
+}
+
+.glow-border {
+  position: relative;
+  overflow: hidden;
+}
+
+.glow-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  background: linear-gradient(130deg, rgba(0, 230, 118, 0.4), rgba(255, 255, 255, 0))
+    border-box;
+  -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.gradient-button {
+  background: linear-gradient(130deg, rgba(0, 230, 118, 0.95), rgba(0, 180, 98, 0.8));
+  color: #02110a;
+  padding: 0.75rem 1.25rem;
+  border-radius: 999px;
+  font-weight: 600;
+  box-shadow: 0 12px 30px rgba(0, 230, 118, 0.35);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.gradient-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 34px rgba(0, 230, 118, 0.4);
+}
+
+.ambient-glow {
+  position: absolute;
+  inset: auto -40% -60% -40%;
+  height: 120px;
+  background: radial-gradient(circle, rgba(0, 230, 118, 0.2), transparent 70%);
+  filter: blur(12px);
+}
+
+.onboarding-step {
+  opacity: 0.4;
+  transform: translateY(8px);
+  transition: all 0.4s ease;
+}
+
+.onboarding-step.active {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.radar {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+}
+
+.radar-ring {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(0, 230, 118, 0.35);
+  border-radius: 50%;
+  animation: radarPulse 2.5s ease-out infinite;
+}
+
+.radar-ring.delay {
+  animation-delay: 0.8s;
+}
+
+.radar-ring.delay-2 {
+  animation-delay: 1.6s;
+}
+
+.radar-dot {
+  width: 12px;
+  height: 12px;
+  background: rgba(0, 230, 118, 0.8);
+  border-radius: 999px;
+  box-shadow: 0 0 18px rgba(0, 230, 118, 0.5);
+}
+
+@keyframes radarPulse {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.2);
+    opacity: 0;
+  }
+}
+
+.success-check {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+}
+
+.success-check svg {
+  width: 100%;
+  height: 100%;
+}
+
+.success-circle {
+  stroke: rgba(0, 230, 118, 0.4);
+  stroke-width: 4;
+  stroke-dasharray: 150;
+  stroke-dashoffset: 150;
+  animation: drawCircle 1.2s forwards;
+}
+
+.success-checkmark {
+  stroke: rgba(0, 230, 118, 0.9);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 60;
+  stroke-dashoffset: 60;
+  animation: drawCheck 0.8s 0.6s forwards;
+}
+
+@keyframes drawCircle {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes drawCheck {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.message-bubble {
+  position: relative;
+  background: rgba(15, 23, 42, 0.8);
+  border-radius: 1.5rem;
+  padding: 1rem 1.25rem;
+  box-shadow: 0 16px 40px rgba(3, 7, 18, 0.5);
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.message-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  width: 18px;
+  height: 18px;
+  background: inherit;
+  transform: rotate(45deg);
+}
+
+.message-bubble.outgoing::after {
+  right: 18px;
+}
+
+.message-bubble.incoming::after {
+  left: 18px;
+}
+
+.message-bubble.outgoing {
+  background: rgba(0, 230, 118, 0.12);
+  border: 1px solid rgba(0, 230, 118, 0.2);
+}
+
+.message-bubble.incoming {
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.reaction {
+  position: absolute;
+  top: -12px;
+  right: -8px;
+  background: rgba(5, 5, 5, 0.7);
+  border: 1px solid rgba(0, 230, 118, 0.4);
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  opacity: 0;
+  transform: scale(0.5);
+  transition: all 0.2s ease;
+}
+
+.reaction.active {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.reply-indicator {
+  position: absolute;
+  left: -60px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(0, 230, 118, 0.2);
+  color: #b5f8d0;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.reply-indicator.visible {
+  opacity: 1;
+}
+
+.skeleton-line {
+  height: 12px;
+  background: linear-gradient(90deg, rgba(30, 41, 59, 0.4), rgba(148, 163, 184, 0.2), rgba(30, 41, 59, 0.4));
+  border-radius: 999px;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200px 0;
+  }
+  100% {
+    background-position: 200px 0;
+  }
+}
+
+.compact-header {
+  backdrop-filter: blur(18px);
+  transition: all 0.3s ease;
+}
+
+.compact-header.compact {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.pop-in {
+  animation: popIn 0.55s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@keyframes popIn {
+  0% {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
