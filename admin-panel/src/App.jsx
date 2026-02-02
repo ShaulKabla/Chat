@@ -32,7 +32,12 @@ const formatLogMeta = (meta) => {
 export default function App() {
   const [token, setToken] = useState("");
   const [credentials, setCredentials] = useState({ username: "", password: "" });
-  const [stats, setStats] = useState({ connectedUsers: 0, waitingUsers: 0, reports: 0 });
+  const [stats, setStats] = useState({
+    connectedUsers: 0,
+    waitingUsers: 0,
+    reports: 0,
+    backendInstances: 1
+  });
   const [reports, setReports] = useState([]);
   const [logs, setLogs] = useState([]);
   const [maintenance, setMaintenance] = useState({ enabled: false, message: "" });
@@ -54,25 +59,19 @@ export default function App() {
   const loadData = async () => {
     if (!token) return;
     try {
-      const [statsRes, reportsRes] = await Promise.all([
+      const [statsRes, reportsRes, maintenanceRes] = await Promise.all([
         fetchJson(`${API_BASE}/api/admin/stats`, { headers }),
-        fetchJson(`${API_BASE}/api/admin/reported`, { headers })
+        fetchJson(`${API_BASE}/api/admin/reported`, { headers }),
+        fetchJson(`${API_BASE}/api/maintenance`, { headers })
       ]);
       setStats(statsRes);
       setReports(reportsRes.reports || []);
+      setMaintenance(maintenanceRes);
+      setMaintenanceMessage(maintenanceRes.message || "");
       setHasLoaded(true);
     } catch (err) {
       setError(err.message);
     }
-    const [statsRes, reportsRes, maintenanceRes] = await Promise.all([
-      fetchJson(`${API_BASE}/api/admin/stats`, { headers }),
-      fetchJson(`${API_BASE}/api/admin/reported`, { headers }),
-      fetchJson(`${API_BASE}/api/maintenance`, { headers })
-    ]);
-    setStats(statsRes);
-    setReports(reportsRes.reports || []);
-    setMaintenance(maintenanceRes);
-    setMaintenanceMessage(maintenanceRes.message || "");
   };
 
   useEffect(() => {
@@ -289,7 +288,7 @@ export default function App() {
 
       {error && <p className="text-red-400 text-sm">{error}</p>}
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         {hasLoaded ? (
           <>
             <StatCard label="Connected" value={stats.connectedUsers} hint="Live sessions">
@@ -301,9 +300,17 @@ export default function App() {
             <StatCard label="Reports" value={stats.reports} hint="Escalations">
               {stats.reports === 0 ? <SuccessCheck /> : <RadarPulse />}
             </StatCard>
+            <StatCard
+              label="Backend Instances"
+              value={stats.backendInstances}
+              hint="Scaling monitor"
+            >
+              <SuccessCheck />
+            </StatCard>
           </>
         ) : (
           <>
+            <SkeletonCard />
             <SkeletonCard />
             <SkeletonCard />
             <SkeletonCard />
@@ -366,7 +373,7 @@ export default function App() {
                 key={report.id}
                 className="glass-panel p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4 pop-in"
               >
-                <div>
+                <div className="space-y-2">
                   <p className="text-sm text-slate-300">
                     Reported ID: <span className="font-semibold">{report.reported_id}</span>
                   </p>
@@ -375,6 +382,24 @@ export default function App() {
                     Reporter: {report.reporter_id} •{" "}
                     {new Date(report.created_at).toLocaleString()}
                   </p>
+                  {report.image_url && (
+                    <div className="mt-2">
+                      <p className="text-xs text-slate-400">Reported image</p>
+                      <a
+                        href={report.image_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 text-xs text-emerald-300 hover:text-emerald-200"
+                      >
+                        View full size
+                      </a>
+                      <img
+                        src={report.image_url}
+                        alt="Reported content"
+                        className="mt-2 h-24 w-24 rounded-lg object-cover border border-slate-700"
+                      />
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={() => handleBan(report.reported_id)}
