@@ -36,11 +36,13 @@ All payload keys are camelCase. Times are epoch milliseconds unless noted.
 | `profile_required` | Meet profile missing | `{ message: string }` |  |
 | `auth_error` | Auth failure | `{ message: string }` |  |
 | `banned` | Account banned | `{ message: string }` |  |
-| `rate_limit` | Rate limit hit | `{ scope: "skip" | "chat" | "connect" }` |  |
+| `rate_limit` | Rate limit hit | `{ scope: "skip" | "chat" | "connect" }` | Legacy event. |
+| `rate_limit_reached` | Rate limit hit | `{ scope: "skip" | "chat" | "connect" }` | Preferred rate-limit event. |
 | `connect_request` | Partner requests connect | `{ userId: string }` |  |
 | `friend_added` | Mutual connect | `{ friendId: string }` |  |
 | `reveal_timer_started` | Reveal timer starts | `{ revealAt: number, durationMs: number }` | 7-minute countdown. |
 | `reveal_available` | Timer elapsed | `{}` | Reveal button enabled. |
 | `reveal_confirmed` | Mutual reveal | `{}` | Photos can unblur. |
-| `reveal_granted` | Mutual reveal | `{ images: { messageId: string, imageUrl: string }[] }` | Populate reveal-gated images. |
+| `reveal_granted` | Mutual reveal | `{}` | Reveal is confirmed. |
+| `source_revealed` | Full image revealed | `{ images: { messageId: string, imageUrl: string }[] }` | Full-res reveal after mutual approval. |
 | `friend_message` | Incoming friend chat | `{ id: number | string, senderId: string, recipientId: string, body: string, imageUrl?: string | null, createdAt: string }` | Stored in DB. |

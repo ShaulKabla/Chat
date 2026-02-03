@@ -36,14 +36,50 @@ const upload = multer({
   }
 });
 
+const processMeetUpload = async (filePath, filenameBase) => {
+  const previewsDir = path.join(uploadsDir, "meet", "previews");
+  const sourcesDir = path.join(uploadsDir, "meet", "sources");
+  await Promise.all([fs.mkdir(previewsDir, { recursive: true }), fs.mkdir(sourcesDir, { recursive: true })]);
+
+  const previewFilename = `${filenameBase}-preview.webp`;
+  const sourceFilename = `${filenameBase}-source.webp`;
+  const previewPath = path.join(previewsDir, previewFilename);
+  const sourcePath = path.join(sourcesDir, sourceFilename);
+
+  await sharp(filePath)
+    .rotate()
+    .resize({ width: 320, height: 320, fit: "inside" })
+    .blur(24)
+    .webp({ quality: 40 })
+    .toFile(previewPath);
+
+  await sharp(filePath)
+    .rotate()
+    .resize({ width: 1600, height: 1600, fit: "inside" })
+    .webp({ quality: 82 })
+    .toFile(sourcePath);
+
+  const previewUrl = `${publicUrl}/meet/previews/${previewFilename}`;
+  const sourceUrl = `${publicUrl}/meet/sources/${sourceFilename}`;
+  return { previewUrl, sourceUrl };
+};
+
 const handleUpload = async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "Missing file" });
   }
   try {
+    const filenameBase = `${Date.now()}-${randomUUID()}`;
+    if (req.body?.mode === "meet") {
+      const { previewUrl, sourceUrl } = await processMeetUpload(req.file.path, filenameBase);
+      await fs.unlink(req.file.path).catch(() => {});
+      addLog("info", "Meet image uploaded", { previewUrl, sourceUrl, requestId: req.requestId });
+      return res.json({ previewUrl, sourceUrl });
+    }
+
     const reportsDir = path.join(uploadsDir, "reports");
     await fs.mkdir(reportsDir, { recursive: true });
-    const filename = `${Date.now()}-${randomUUID()}.webp`;
+    const filename = `${filenameBase}.webp`;
     const targetPath = path.join(reportsDir, filename);
 
     await sharp(req.file.path)

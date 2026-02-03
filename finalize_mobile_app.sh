@@ -103,6 +103,48 @@ cat <<'EOT' > assets/lottie/placeholder.json
 }
 EOT
 
+cat <<'EOT' > assets/lottie/searching.json
+{
+  "v": "5.7.4",
+  "fr": 30,
+  "ip": 0,
+  "op": 90,
+  "w": 200,
+  "h": 200,
+  "nm": "searching",
+  "ddd": 0,
+  "assets": [],
+  "layers": [
+    {
+      "ddd": 0,
+      "ind": 1,
+      "ty": 4,
+      "nm": "pulse",
+      "sr": 1,
+      "ks": {
+        "o": { "a": 0, "k": 100 },
+        "r": { "a": 0, "k": 0 },
+        "p": { "a": 0, "k": [100, 100, 0] },
+        "a": { "a": 0, "k": [0, 0, 0] },
+        "s": { "a": 1, "k": [
+          { "t": 0, "s": [80, 80, 100] },
+          { "t": 45, "s": [110, 110, 100] },
+          { "t": 90, "s": [80, 80, 100] }
+        ] }
+      },
+      "shapes": [
+        { "ty": "el", "p": { "a": 0, "k": [0, 0] }, "s": { "a": 0, "k": [120, 120] }, "nm": "Ellipse" },
+        { "ty": "st", "c": { "a": 0, "k": [0.2, 0.6, 1, 1] }, "o": { "a": 0, "k": 100 }, "w": { "a": 0, "k": 6 }, "lc": 1, "lj": 1, "nm": "Stroke" }
+      ],
+      "ip": 0,
+      "op": 90,
+      "st": 0,
+      "bm": 0
+    }
+  ]
+}
+EOT
+
 printf '%s' "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==" | base64 -d > assets/images/placeholder.png
 
 cat <<'EOT' > .env
@@ -565,6 +607,7 @@ export type ChatMessage = {
   createdAt: number;
   userId: string;
   image?: string;
+  imageSource?: string;
   imagePending?: boolean;
   status: MessageStatus;
   replyTo?: ReplyReference;
@@ -806,6 +849,7 @@ EOT
 cat <<'EOT' > src/services/socketService.ts
 import { io, Socket } from 'socket.io-client';
 import DeviceInfo from 'react-native-device-info';
+import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
 import i18n from '../i18n';
 import { AppConfig } from '../config/Config';
 import { useChatStore } from '../store/useChatStore';
@@ -829,6 +873,8 @@ type OutgoingPayload = {
   createdAt: number;
   userId: string;
   image?: string;
+  imagePreview?: string;
+  imageSource?: string;
   replyTo?: ChatMessage['replyTo'];
 };
 
@@ -933,6 +979,7 @@ class SocketService {
       setRevealAt(null);
       setPendingConnectRequest(null);
       setMessages([]);
+      ReactNativeHapticFeedback.trigger('impactHeavy');
       if (payload?.partnerProfile) {
         setPartnerProfile({
           userId: payload.partnerId,
@@ -1044,6 +1091,9 @@ class SocketService {
     this.socket.on('rate_limit', () => {
       setSystemNotice({ type: 'warning', message: i18n.t('notifications.rateLimited') });
     });
+    this.socket.on('rate_limit_reached', () => {
+      setSystemNotice({ type: 'warning', message: i18n.t('notifications.rateLimited') });
+    });
     this.socket.on('connect_request', payload => {
       if (payload?.userId) {
         setPendingConnectRequest(payload.userId);
@@ -1067,7 +1117,10 @@ class SocketService {
       setRevealConfirmed(true);
       setRevealAt(null);
     });
-    this.socket.on('reveal_granted', payload => {
+    this.socket.on('reveal_granted', () => {
+      ReactNativeHapticFeedback.trigger('notificationSuccess');
+    });
+    this.socket.on('source_revealed', payload => {
       if (payload?.images?.length) {
         payload.images.forEach((entry: { messageId: string; imageUrl: string }) => {
           useChatStore.getState().updateMessageByServerId(entry.messageId, {
@@ -1286,7 +1339,7 @@ class SocketService {
     };
   }
 
-  async uploadImage(uri: string, filename?: string, type?: string) {
+  async uploadImage(uri: string, filename?: string, type?: string, mode?: MatchMode) {
     const token = useChatStore.getState().authToken;
     const form = new FormData();
     form.append('image', {
@@ -1294,6 +1347,9 @@ class SocketService {
       name: filename ?? `upload-${Date.now()}.jpg`,
       type: type ?? 'image/jpeg',
     } as unknown as Blob);
+    if (mode) {
+      form.append('mode', mode);
+    }
 
     const response = await fetch(`${AppConfig.apiUrl}/api/uploads/report`, {
       method: 'POST',
@@ -1308,7 +1364,11 @@ class SocketService {
     if (!response.ok) {
       throw new Error(data?.error || i18n.t('errors.uploadFailed'));
     }
-    return normalizeImageUrl(data?.imageUrl, AppConfig.apiUrl);
+    return {
+      imageUrl: normalizeImageUrl(data?.imageUrl, AppConfig.apiUrl),
+      previewUrl: normalizeImageUrl(data?.previewUrl, AppConfig.apiUrl),
+      sourceUrl: normalizeImageUrl(data?.sourceUrl, AppConfig.apiUrl),
+    };
   }
 
   blockUser(payload: { blockedUserId: string }) {
@@ -1693,7 +1753,7 @@ import { useChatStore } from '../store/useChatStore';
 import { socketService } from '../services/socketService';
 import { LatencyPill } from '../components/LatencyPill';
 
-const matchingAnimation = require('../../assets/lottie/placeholder.json');
+const matchingAnimation = require('../../assets/lottie/searching.json');
 
 export const MatchingScreen = () => {
   const navigation = useNavigation();
@@ -1733,11 +1793,9 @@ export const MatchingScreen = () => {
           {matchMode === 'meet' ? t('mode.letsMeet') : t('mode.justTalk')}
         </Text>
       </Animated.View>
-      <Text style={styles.title}>
-        {maintenanceMode
-          ? maintenanceMessage || t('matching.maintenance')
-          : t('matching.finding')}
-      </Text>
+      {maintenanceMode ? (
+        <Text style={styles.title}>{maintenanceMessage || t('matching.maintenance')}</Text>
+      ) : null}
       <Animated.View style={[styles.orb, animatedStyle]} />
       <LottieView
         source={matchingAnimation}
@@ -1869,10 +1927,12 @@ const MessageBubble = React.memo(
     labels,
     onReply,
     onRetry,
+    pulseOverlay,
   }: {
     message: ChatMessage;
     isOwn: boolean;
     blurImage: boolean;
+    pulseOverlay: boolean;
     labels: {
       reply: string;
       tapToReveal: string;
@@ -1892,16 +1952,31 @@ const MessageBubble = React.memo(
         ? `↪ ${labels.photo}`
         : undefined;
     const blurProgress = useSharedValue(blurImage ? 1 : 0);
+    const overlayPulse = useSharedValue(1);
     const blurStyle = useAnimatedStyle(() => ({
       opacity: blurProgress.value,
     }));
     const clearStyle = useAnimatedStyle(() => ({
       opacity: 1 - blurProgress.value,
     }));
+    const overlayPulseStyle = useAnimatedStyle(() => ({
+      transform: [{ scale: overlayPulse.value }],
+    }));
 
     useEffect(() => {
       blurProgress.value = withTiming(blurImage ? 1 : 0, { duration: 420 });
     }, [blurImage, blurProgress]);
+
+    useEffect(() => {
+      if (pulseOverlay) {
+        overlayPulse.value = withRepeat(
+          withSequence(withTiming(1.03, { duration: 900 }), withTiming(1, { duration: 900 })),
+          -1,
+        );
+      } else {
+        overlayPulse.value = withTiming(1, { duration: 200 });
+      }
+    }, [overlayPulse, pulseOverlay]);
 
     return (
       <Swipeable
@@ -1939,7 +2014,7 @@ const MessageBubble = React.memo(
                   />
                 </Animated.View>
                 {blurImage ? (
-                  <Animated.View style={[styles.blurOverlay, blurStyle]}>
+                  <Animated.View style={[styles.blurOverlay, blurStyle, overlayPulseStyle]}>
                     <Text style={styles.blurText}>{labels.tapToReveal}</Text>
                   </Animated.View>
                 ) : null}
@@ -2060,9 +2135,9 @@ export const ChatScreen = () => {
   }, [maintenanceMode, navigation, partnerId]);
 
   const sendMessage = useCallback(
-    (payload: { text: string; image?: string }) => {
+    (payload: { text: string; imagePreview?: string; imageSource?: string }) => {
       const text = payload.text.trim();
-      if (!text && !payload.image) {
+      if (!text && !payload.imagePreview && !payload.imageSource) {
         return;
       }
 
@@ -2072,7 +2147,8 @@ export const ChatScreen = () => {
         text,
         createdAt: Date.now(),
         userId,
-        image: payload.image,
+        image: payload.imagePreview ?? payload.imageSource,
+        imageSource: payload.imageSource,
         status: 'pending',
         replyTo: replyTo
           ? {
@@ -2091,6 +2167,8 @@ export const ChatScreen = () => {
         createdAt: message.createdAt,
         userId: message.userId,
         image: message.image,
+        imagePreview: payload.imagePreview,
+        imageSource: payload.imageSource,
         replyTo: message.replyTo,
       });
 
@@ -2109,16 +2187,23 @@ export const ChatScreen = () => {
     }
 
     try {
-      const imageUrl = await socketService.uploadImage(asset.uri, asset.fileName ?? undefined, asset.type ?? undefined);
-      if (!imageUrl) {
+      const uploaded = await socketService.uploadImage(
+        asset.uri,
+        asset.fileName ?? undefined,
+        asset.type ?? undefined,
+        matchMode,
+      );
+      const imagePreview = uploaded?.previewUrl ?? uploaded?.imageUrl;
+      const imageSource = uploaded?.sourceUrl ?? uploaded?.imageUrl;
+      if (!imagePreview && !imageSource) {
         throw new Error(t('errors.uploadFailed'));
       }
-      sendMessage({ text: '', image: imageUrl });
+      sendMessage({ text: '', imagePreview, imageSource });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('errors.uploadFailed');
       setSystemNotice({ type: 'error', message });
     }
-  }, [sendMessage, setSystemNotice, t]);
+  }, [matchMode, sendMessage, setSystemNotice, t]);
 
   const handleReport = useCallback(
     async (reason: string) => {
@@ -2164,11 +2249,13 @@ export const ChatScreen = () => {
     ({ item }: { item: ChatMessage }) => {
       const isOwn = item.userId === userId;
       const shouldBlur = matchMode === 'meet' && !revealConfirmed;
+      const shouldPulse = matchMode === 'meet' && Boolean(revealAt) && !revealAvailable && !revealConfirmed;
       return (
         <MessageBubble
           message={item}
           isOwn={isOwn}
           blurImage={Boolean(item.image) && shouldBlur}
+          pulseOverlay={shouldPulse}
           labels={{
             reply: t('chat.reply'),
             tapToReveal: t('chat.tapToReveal'),
@@ -2185,13 +2272,14 @@ export const ChatScreen = () => {
               createdAt: item.createdAt,
               userId,
               image: item.image,
+              imageSource: item.imageSource,
               replyTo: item.replyTo,
             })
           }
         />
       );
     },
-    [matchMode, revealConfirmed, statusLabels, t, userId],
+    [matchMode, revealAt, revealAvailable, revealConfirmed, statusLabels, t, userId],
   );
 
   const replyName = replyTo?.userId === userId ? t('misc.you') : t('misc.partner');

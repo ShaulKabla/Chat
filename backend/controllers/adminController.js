@@ -107,11 +107,32 @@ const updateMaintenance = (redisClient, io) => async (req, res) => {
   return res.json(maintenance);
 };
 
+const getSystemSnapshot =
+  (redisClient, { getActiveMatches, getQueueLength, getMediaCleanupStatus }) =>
+  async (req, res) => {
+    try {
+      const [usersInQueue, activeMatches, mediaCleanupStatus] = await Promise.all([
+        getQueueLength(),
+        getActiveMatches(),
+        getMediaCleanupStatus()
+      ]);
+      return res.json({
+        active_matches: Number(activeMatches || 0),
+        users_in_queue: Number(usersInQueue || 0),
+        media_cleanup_status: mediaCleanupStatus
+      });
+    } catch (err) {
+      addLog("error", "System snapshot error", { error: err.message, requestId: req.requestId });
+      return res.status(500).json({ error: "Failed to load system snapshot" });
+    }
+  };
+
 module.exports = {
   adminLogin,
   adminLogout,
   getStats,
   getReported,
   banUser,
-  updateMaintenance
+  updateMaintenance,
+  getSystemSnapshot
 };
