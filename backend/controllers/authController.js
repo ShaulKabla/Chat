@@ -3,9 +3,10 @@ const { v4: uuidv4 } = require("uuid");
 const { addLog } = require("../services/logStream");
 
 const registerAnonymous = (pool, redisClient) => async (req, res) => {
+  const t = req.t || ((key) => key);
   const fcmToken = String(req.body?.fcmToken || "").trim();
   if (!fcmToken) {
-    return res.status(400).json({ error: "Missing fcmToken" });
+    return res.status(400).json({ error: t("errors.missingToken") });
   }
   const userId = uuidv4();
   try {
@@ -25,7 +26,7 @@ const registerAnonymous = (pool, redisClient) => async (req, res) => {
     return res.json({ userId, token });
   } catch (err) {
     addLog("error", "Anonymous auth error", { error: err.message, requestId: req.requestId });
-    return res.status(500).json({ error: "Failed to register" });
+    return res.status(500).json({ error: t("errors.authError") });
   }
 };
 

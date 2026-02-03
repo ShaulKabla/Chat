@@ -31,16 +31,17 @@ const adminLogout = (redisClient) => async (req, res) => {
   return res.json({ status: "ok" });
 };
 
-const getStats = (pool, redisClient, getBackendInstanceCount) => async (req, res) => {
+const getStats =
+  (pool, redisClient, { getBackendInstanceCount, getActiveConnections, getQueueLength }) =>
+  async (req, res) => {
   try {
-    const [reportCount, connectedUsers, waitingUsers, backendInstances] = await Promise.all([
+    const [reportCount, waitingUsers, backendInstances] = await Promise.all([
       pool.query("SELECT COUNT(*) FROM reports"),
-      redisClient.hLen("user_sockets"),
-      redisClient.zCard("matchmaking_waiting"),
+      getQueueLength(),
       getBackendInstanceCount()
     ]);
     return res.json({
-      connectedUsers: Number(connectedUsers || 0),
+      connectedUsers: Number(getActiveConnections()),
       waitingUsers: Number(waitingUsers || 0),
       reports: Number(reportCount.rows[0].count || 0),
       backendInstances: Number(backendInstances || 1)
@@ -70,7 +71,7 @@ const revokeUserTokens = async (redisClient, userId) => {
   }
 };
 
-const banUser = (pool, redisClient, io) => async (req, res) => {
+const banUser = (pool, redisClient, io, socketByUser) => async (req, res) => {
   const { userId, reason } = req.body;
   if (!userId) {
     return res.status(400).json({ error: "Missing userId" });
@@ -82,9 +83,9 @@ const banUser = (pool, redisClient, io) => async (req, res) => {
     ]);
     await redisClient.sAdd("banned_users", userId);
     await revokeUserTokens(redisClient, userId);
-    const socketId = await redisClient.hGet("user_sockets", userId);
+    const socketId = socketByUser?.get(userId);
     if (socketId) {
-      io.to(socketId).emit("banned", { reason: reason || "admin" });
+      io.to(socketId).emit("banned", { message: reason || "admin" });
       io.in(socketId).disconnectSockets(true);
     }
     addLog("info", "User banned", { userId, reason, requestId: req.requestId });
@@ -95,10 +96,13 @@ const banUser = (pool, redisClient, io) => async (req, res) => {
   }
 };
 
-const updateMaintenance = (redisClient) => async (req, res) => {
+const updateMaintenance = (redisClient, io) => async (req, res) => {
   const { enabled, message } = req.body || {};
   await setMaintenanceState(redisClient, { enabled, message });
   const maintenance = await getMaintenanceState(redisClient);
+  if (io) {
+    io.emit("maintenance_mode", maintenance);
+  }
   addLog("info", "Maintenance mode updated", { ...maintenance, requestId: req.requestId });
   return res.json(maintenance);
 };

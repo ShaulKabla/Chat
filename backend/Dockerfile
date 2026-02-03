@@ -11,6 +11,7 @@ COPY server.js ./
 COPY controllers ./controllers
 COPY middleware ./middleware
 COPY services ./services
+COPY scripts ./scripts
 COPY healthcheck.sh ./healthcheck.sh
 
 RUN chmod +x /app/healthcheck.sh
