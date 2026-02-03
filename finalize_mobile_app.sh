@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="AnonymousChatApp"
+APP_NAME="VibeChat"
+APP_DISPLAY_NAME="VIBE CHAT"
 TEMPLATE="react-native-template-typescript"
 
 if [ -d "$APP_NAME" ]; then
@@ -13,6 +14,13 @@ echo "Initializing React Native project..."
 npx react-native init "$APP_NAME" --template "$TEMPLATE"
 
 cd "$APP_NAME"
+
+cat <<EOT > app.json
+{
+  "name": "${APP_NAME}",
+  "displayName": "${APP_DISPLAY_NAME}"
+}
+EOT
 
 echo "Installing dependencies..."
 # Core dependencies
@@ -148,7 +156,7 @@ EOT
 printf '%s' "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==" | base64 -d > assets/images/placeholder.png
 
 cat <<'EOT' > .env
-API_URL=http://localhost:3000
+API_URL=http://109.207.76.45
 TERMS_URL=https://example.com/terms
 SOCKET_PING_INTERVAL=5000
 SOCKET_BACKOFF_MAX_MS=15000
@@ -156,7 +164,7 @@ MAINTENANCE_MESSAGE=We are currently performing maintenance. Please check back s
 EOT
 
 cat <<'EOT' > .env.example
-API_URL=http://localhost:3000
+API_URL=http://109.207.76.45
 TERMS_URL=https://example.com/terms
 SOCKET_PING_INTERVAL=5000
 SOCKET_BACKOFF_MAX_MS=15000
@@ -173,7 +181,7 @@ cat <<'EOT' > src/config/Config.ts
 import Config from 'react-native-config';
 
 export const AppConfig = {
-  apiUrl: Config.API_URL ?? 'http://localhost:3000',
+  apiUrl: Config.API_URL ?? 'http://109.207.76.45',
   termsUrl: Config.TERMS_URL ?? 'https://example.com/terms',
   socketPingIntervalMs: Number(Config.SOCKET_PING_INTERVAL ?? '5000'),
   socketBackoffMaxMs: Number(Config.SOCKET_BACKOFF_MAX_MS ?? '15000'),
@@ -184,7 +192,7 @@ EOT
 cat <<'EOT' > src/locales/en.json
 {
   "app": {
-    "name": "Anonymous Chat",
+    "name": "VIBE CHAT",
     "tagline": "Connect instantly with a safe, respectful community."
   },
   "welcome": {
@@ -212,7 +220,7 @@ cat <<'EOT' > src/locales/en.json
     "friends": "Friends"
   },
   "chat": {
-    "title": "Anonymous Chat",
+    "title": "VIBE CHAT",
     "searching": "Searching for a partner...",
     "clear": "Clear",
     "skip": "Skip",
@@ -333,7 +341,7 @@ EOT
 cat <<'EOT' > src/locales/he.json
 {
   "app": {
-    "name": "Anonymous Chat",
+    "name": "VIBE CHAT",
     "tagline": "Connect instantly with a safe, respectful community."
   },
   "welcome": {
@@ -361,7 +369,7 @@ cat <<'EOT' > src/locales/he.json
     "friends": "Friends"
   },
   "chat": {
-    "title": "Anonymous Chat",
+    "title": "VIBE CHAT",
     "searching": "Searching for a partner...",
     "clear": "Clear",
     "skip": "Skip",
@@ -823,7 +831,7 @@ export const useChatStore = create<ChatState>()(
         }),
     }),
     {
-      name: 'anonymous-chat-store',
+      name: 'vibe-chat-store',
       storage: {
         getItem: AsyncStorage.getItem,
         setItem: AsyncStorage.setItem,
