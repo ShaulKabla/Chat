@@ -1,0 +1,32 @@
+{
+  "errors": {
+    "missingToken": "Missing token",
+    "invalidToken": "Invalid token",
+    "tokenRevoked": "Token revoked",
+    "accountBanned": "Account banned.",
+    "authError": "Authentication error. Please sign in again.",
+    "unauthorized": "Unauthorized",
+    "missingProfile": "Complete your profile to start matching.",
+    "missingFriendId": "Missing friend id",
+    "missingMessage": "Missing message",
+    "missingReportFields": "Missing reporterId or reportedId",
+    "failedProfileLoad": "Failed to load profile",
+    "failedProfileSave": "Failed to save profile",
+    "failedFriendsLoad": "Failed to load friends",
+    "failedMessagesLoad": "Failed to load messages",
+    "failedMessageSend": "Failed to send message",
+    "failedReport": "Failed to submit report",
+    "rateLimited": "Too many requests. Please wait.",
+    "noPartner": "No active partner",
+    "partnerOffline": "Partner offline"
+  },
+  "match": {
+    "searching": "Searching for new partner...",
+    "maintenance": "Maintenance mode",
+    "expanding": "Expanding search...",
+    "partnerLeft": "System: Your partner left the chat."
+  },
+  "notices": {
+    "profileRequired": "Complete your profile to start matching."
+  }
+}

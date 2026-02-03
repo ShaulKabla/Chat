@@ -1,9 +1,10 @@
 const { addLog } = require("../services/logStream");
 
 const submitReport = (pool) => async (req, res) => {
+  const t = req.t || ((key) => key);
   const { reporterId, reportedId, reason, imageUrl } = req.body;
   if (!reporterId || !reportedId) {
-    return res.status(400).json({ error: "Missing reporterId or reportedId" });
+    return res.status(400).json({ error: t("errors.missingReportFields") });
   }
   try {
     await pool.query(
@@ -19,7 +20,7 @@ const submitReport = (pool) => async (req, res) => {
     return res.json({ status: "ok" });
   } catch (err) {
     addLog("error", "Report API error", { error: err.message, requestId: req.requestId });
-    return res.status(500).json({ error: "Failed to submit report" });
+    return res.status(500).json({ error: t("errors.failedReport") });
   }
 };
 
