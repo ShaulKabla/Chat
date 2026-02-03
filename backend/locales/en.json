@@ -22,7 +22,9 @@
   },
   "match": {
     "searching": "Searching for new partner...",
-    "maintenance": "Maintenance mode"
+    "maintenance": "Maintenance mode",
+    "expanding": "Expanding search...",
+    "partnerLeft": "System: Your partner left the chat."
   },
   "notices": {
     "profileRequired": "Complete your profile to start matching."

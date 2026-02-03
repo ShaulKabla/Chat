@@ -10,13 +10,19 @@ const removeFromQueue = async (redisClient, userId, queueKey = QUEUE_KEY_TALK) =
 };
 
 const getQueueCandidates = async (redisClient, limit = 50, queueKey = QUEUE_KEY_TALK) => {
-  return redisClient.zRange(queueKey, 0, limit - 1);
+  return redisClient.zRangeWithScores(queueKey, 0, limit - 1);
+};
+
+const getQueueScore = async (redisClient, userId, queueKey = QUEUE_KEY_TALK) => {
+  const score = await redisClient.zScore(queueKey, userId);
+  return score ? Number(score) : null;
 };
 
 module.exports = {
   enqueueMatchmaking,
   removeFromQueue,
   getQueueCandidates,
+  getQueueScore,
   QUEUE_KEY_TALK,
   QUEUE_KEY_MEET
 };

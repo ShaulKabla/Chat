@@ -43,13 +43,13 @@ const handleUpload = async (req, res) => {
   try {
     const reportsDir = path.join(uploadsDir, "reports");
     await fs.mkdir(reportsDir, { recursive: true });
-    const filename = `${Date.now()}-${randomUUID()}.jpg`;
+    const filename = `${Date.now()}-${randomUUID()}.webp`;
     const targetPath = path.join(reportsDir, filename);
 
     await sharp(req.file.path)
       .rotate()
       .resize({ width: 1024, height: 1024, fit: "inside" })
-      .jpeg({ quality: 82 })
+      .webp({ quality: 80 })
       // Default sharp output strips metadata to remove EXIF data.
       .toFile(targetPath);
     await fs.unlink(req.file.path).catch(() => {});

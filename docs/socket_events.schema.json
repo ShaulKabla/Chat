@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Socket Events Contract",
+  "type": "object",
+  "properties": {
+    "clientToServer": {
+      "type": "object",
+      "properties": {
+        "find_match": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "enum": ["talk", "meet"] }
+          },
+          "required": ["mode"],
+          "additionalProperties": false
+        },
+        "skip": { "type": "object", "additionalProperties": false },
+        "message": {
+          "type": "object",
+          "properties": {
+            "clientId": { "type": "string" },
+            "text": { "type": "string" },
+            "createdAt": { "type": "number" },
+            "userId": { "type": "string" },
+            "image": { "type": "string" },
+            "replyTo": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "text": { "type": "string" },
+                "image": { "type": "string" },
+                "userId": { "type": "string" }
+              },
+              "required": ["id", "userId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["clientId", "text", "createdAt", "userId"],
+          "additionalProperties": false
+        },
+        "typing": { "type": "object", "additionalProperties": false },
+        "stop_typing": { "type": "object", "additionalProperties": false },
+        "ping": {
+          "type": "object",
+          "properties": { "ts": { "type": "number" } },
+          "additionalProperties": false
+        },
+        "block_user": {
+          "type": "object",
+          "properties": { "blockedUserId": { "type": "string" } },
+          "required": ["blockedUserId"],
+          "additionalProperties": false
+        },
+        "update_profile": {
+          "type": "object",
+          "properties": {
+            "gender": { "type": "string" },
+            "ageGroup": { "type": "string" },
+            "interests": { "type": "array", "items": { "type": "string" } },
+            "genderPreference": { "type": "string" }
+          },
+          "required": ["gender", "ageGroup", "interests"],
+          "additionalProperties": false
+        },
+        "reveal_request": { "type": "object", "additionalProperties": false },
+        "connect_request": { "type": "object", "additionalProperties": false },
+        "friend_message": {
+          "type": "object",
+          "properties": {
+            "friendId": { "type": "string" },
+            "text": { "type": "string" },
+            "image": { "type": "string" }
+          },
+          "required": ["friendId"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "serverToClient": {
+      "type": "object",
+      "properties": {
+        "maintenance_mode": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "message": { "type": "string" }
+          },
+          "required": ["enabled"],
+          "additionalProperties": false
+        },
+        "user:id": {
+          "type": "object",
+          "properties": { "userId": { "type": "string" } },
+          "required": ["userId"],
+          "additionalProperties": false
+        },
+        "match_found": {
+          "type": "object",
+          "properties": {
+            "partnerId": { "type": "string" },
+            "mode": { "type": "string", "enum": ["talk", "meet"] },
+            "revealAvailable": { "type": "boolean" },
+            "partnerProfile": {
+              "type": "object",
+              "properties": {
+                "gender": { "type": "string" },
+                "ageGroup": { "type": "string" },
+                "interests": { "type": "array", "items": { "type": "string" } }
+              },
+              "required": ["gender", "ageGroup", "interests"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["partnerId", "mode", "revealAvailable"],
+          "additionalProperties": false
+        },
+        "match_searching": {
+          "type": "object",
+          "properties": { "message": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "search_expanding": {
+          "type": "object",
+          "properties": { "message": { "type": "string" } },
+          "required": ["message"],
+          "additionalProperties": false
+        },
+        "partner_left": {
+          "type": "object",
+          "properties": {
+            "reason": { "type": "string" },
+            "systemMessage": { "type": "string" }
+          },
+          "required": ["reason"],
+          "additionalProperties": false
+        },
+        "message": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "clientId": { "type": "string" },
+            "text": { "type": "string" },
+            "createdAt": { "type": "number" },
+            "userId": { "type": "string" },
+            "image": { "type": ["string", "null"] },
+            "imagePending": { "type": "boolean" },
+            "replyTo": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "text": { "type": "string" },
+                "image": { "type": "string" },
+                "userId": { "type": "string" }
+              },
+              "required": ["id", "userId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["id", "text", "createdAt", "userId"],
+          "additionalProperties": false
+        },
+        "message_ack": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "clientId": { "type": "string" },
+            "messageId": { "type": "string" },
+            "status": { "type": "string" }
+          },
+          "required": ["ok"],
+          "additionalProperties": false
+        },
+        "typing": {
+          "type": "object",
+          "properties": { "userId": { "type": "string" } },
+          "required": ["userId"],
+          "additionalProperties": false
+        },
+        "stop_typing": {
+          "type": "object",
+          "properties": { "userId": { "type": "string" } },
+          "required": ["userId"],
+          "additionalProperties": false
+        },
+        "pong": {
+          "type": "object",
+          "properties": { "ts": { "type": "number" } },
+          "required": ["ts"],
+          "additionalProperties": false
+        },
+        "profile_required": {
+          "type": "object",
+          "properties": { "message": { "type": "string" } },
+          "required": ["message"],
+          "additionalProperties": false
+        },
+        "auth_error": {
+          "type": "object",
+          "properties": { "message": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "banned": {
+          "type": "object",
+          "properties": { "message": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "rate_limit": {
+          "type": "object",
+          "properties": { "scope": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "connect_request": {
+          "type": "object",
+          "properties": { "userId": { "type": "string" } },
+          "required": ["userId"],
+          "additionalProperties": false
+        },
+        "friend_added": {
+          "type": "object",
+          "properties": { "friendId": { "type": "string" } },
+          "required": ["friendId"],
+          "additionalProperties": false
+        },
+        "reveal_timer_started": {
+          "type": "object",
+          "properties": {
+            "revealAt": { "type": "number" },
+            "durationMs": { "type": "number" }
+          },
+          "required": ["revealAt", "durationMs"],
+          "additionalProperties": false
+        },
+        "reveal_available": { "type": "object", "additionalProperties": false },
+        "reveal_confirmed": { "type": "object", "additionalProperties": false },
+        "reveal_granted": {
+          "type": "object",
+          "properties": {
+            "images": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "messageId": { "type": "string" },
+                  "imageUrl": { "type": "string" }
+                },
+                "required": ["messageId", "imageUrl"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["images"],
+          "additionalProperties": false
+        },
+        "friend_message": {
+          "type": "object",
+          "properties": {
+            "id": { "type": ["string", "number"] },
+            "senderId": { "type": "string" },
+            "recipientId": { "type": "string" },
+            "body": { "type": "string" },
+            "imageUrl": { "type": ["string", "null"] },
+            "createdAt": { "type": "string" }
+          },
+          "required": ["id", "senderId", "recipientId", "createdAt"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -18,6 +18,7 @@ const {
   enqueueMatchmaking,
   removeFromQueue,
   getQueueCandidates,
+  getQueueScore,
   QUEUE_KEY_TALK,
   QUEUE_KEY_MEET
 } = require("./services/matchmaking");
@@ -64,12 +65,16 @@ const socketByUser = new Map();
 const userBySocket = new Map();
 const pairings = new Map();
 const matchingLocks = new Set();
+const skipLocks = new Set();
 const sessions = new Map();
 const sessionByUser = new Map();
 const userModes = new Map();
+const expandedSearchNotified = new Map();
 
 const uploadsDir = process.env.UPLOADS_DIR || path.resolve(__dirname, "../uploads");
 const revealDelayMs = Number(process.env.REVEAL_DELAY_MS || 7 * 60 * 1000);
+const revealTickMs = Number(process.env.REVEAL_TICK_MS || 1000);
+const meetExpandDelayMs = Number(process.env.MEET_EXPAND_DELAY_MS || 15000);
 const mediaRetentionDays = Number(process.env.MEDIA_RETENTION_DAYS || 5);
 
 app.use(helmet());
@@ -224,6 +229,29 @@ const fetchProfile = async (userId) => {
   return rows[0] || null;
 };
 
+const upsertProfileForSocket = async (userId, payload) => {
+  const { gender, ageGroup, interests, genderPreference } = payload || {};
+  if (!gender || !ageGroup || !Array.isArray(interests) || interests.length < 3) {
+    return { error: "errors.missingProfile" };
+  }
+  const sanitizedInterests = interests.map((item) => String(item).trim()).filter(Boolean);
+  if (sanitizedInterests.length < 3) {
+    return { error: "errors.missingProfile" };
+  }
+
+  const { rows } = await pool.query(
+    `
+      INSERT INTO profiles (user_id, gender, age_group, interests, gender_preference)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (user_id)
+      DO UPDATE SET gender = $2, age_group = $3, interests = $4, gender_preference = $5, updated_at = NOW()
+      RETURNING user_id, gender, age_group, interests, gender_preference
+    `,
+    [userId, gender, ageGroup, sanitizedInterests, genderPreference || "any"]
+  );
+  return { profile: rows[0] };
+};
+
 const areGenderCompatible = (profileA, profileB) => {
   const prefA = profileA.gender_preference || "any";
   const prefB = profileB.gender_preference || "any";
@@ -287,10 +315,13 @@ const createSession = (userId, partnerId, mode) => {
     users: [userId, partnerId],
     mode,
     revealAvailable: false,
+    revealGranted: false,
+    revealAt: null,
     revealTimer: null,
     revealRequests: new Set(),
     connectRequests: new Set(),
-    chatters: new Set()
+    chatters: new Set(),
+    pendingImages: new Map()
   };
   sessions.set(key, session);
   sessionByUser.set(userId, key);
@@ -305,28 +336,47 @@ const clearSession = (userId) => {
   }
   const session = sessions.get(key);
   if (session?.revealTimer) {
-    clearTimeout(session.revealTimer);
+    clearInterval(session.revealTimer);
+    addLog("info", "Reveal timer cleared", { sessionKey: key });
   }
+  session?.pendingImages?.clear?.();
   if (session?.users) {
     session.users.forEach((id) => sessionByUser.delete(id));
   }
   sessions.delete(key);
+  addLog("info", "Session cleared", { sessionKey: key });
 };
 
 const startRevealTimer = (session) => {
   if (session.revealTimer || session.revealAvailable || session.mode !== "meet") {
     return;
   }
-  session.revealTimer = setTimeout(() => {
-    session.revealAvailable = true;
-    session.revealTimer = null;
-    session.users.forEach((userId) => {
-      const socket = getSocketForUser(userId);
-      if (socket) {
-        socket.emit("reveal_available");
+  session.revealAt = Date.now() + revealDelayMs;
+  session.users.forEach((userId) => {
+    const socket = getSocketForUser(userId);
+    if (socket) {
+      socket.emit("reveal_timer_started", { revealAt: session.revealAt, durationMs: revealDelayMs });
+    }
+  });
+  session.revealTimer = setInterval(() => {
+    if (session.revealAvailable || !session.revealAt) {
+      return;
+    }
+    if (Date.now() >= session.revealAt) {
+      session.revealAvailable = true;
+      session.revealAt = null;
+      if (session.revealTimer) {
+        clearInterval(session.revealTimer);
+        session.revealTimer = null;
       }
-    });
-  }, revealDelayMs);
+      session.users.forEach((userId) => {
+        const socket = getSocketForUser(userId);
+        if (socket) {
+          socket.emit("reveal_available");
+        }
+      });
+    }
+  }, revealTickMs);
 };
 
 const matchUsers = async (userId, mode) => {
@@ -340,15 +390,16 @@ const matchUsers = async (userId, mode) => {
     }
     const queueKey = queueKeyForMode(mode);
     const queueCandidates = await getQueueCandidates(redisClient, 50, queueKey);
-    const candidateIds = queueCandidates.filter(
-      (candidateId) => candidateId !== userId && !pairings.has(candidateId)
-    );
+    const candidateIds = queueCandidates
+      .map((entry) => entry.value)
+      .filter((candidateId) => candidateId !== userId && !pairings.has(candidateId));
     if (!candidateIds.length) {
       return;
     }
 
     const blocked = await getBlockedCandidates(userId, candidateIds);
-    const queueOrder = new Map(queueCandidates.map((id, index) => [id, index]));
+    const queueOrder = new Map(queueCandidates.map((entry, index) => [entry.value, index]));
+    const queueScores = new Map(queueCandidates.map((entry) => [entry.value, Number(entry.score)]));
 
     let bestCandidate = null;
     let bestScore = -1;
@@ -364,6 +415,18 @@ const matchUsers = async (userId, mode) => {
           });
         }
         return;
+      }
+
+      const userScore = await getQueueScore(redisClient, userId, queueKey);
+      const isExpanded = userScore ? Date.now() - userScore >= meetExpandDelayMs : false;
+      if (isExpanded && !expandedSearchNotified.get(userId)) {
+        const socketId = socketByUser.get(userId);
+        if (socketId) {
+          io.to(socketId).emit("search_expanding", {
+            message: getTranslatorForUser(userId)("match.expanding")
+          });
+          expandedSearchNotified.set(userId, true);
+        }
       }
 
       const profilesResult = await pool.query(
@@ -389,6 +452,9 @@ const matchUsers = async (userId, mode) => {
           return;
         }
         const score = sharedInterestCount(userProfile, candidateProfile);
+        if (score === 0 && !isExpanded) {
+          return;
+        }
         const order = queueOrder.get(candidateId) ?? Number.POSITIVE_INFINITY;
         if (score > bestScore || (score === bestScore && order < bestOrder)) {
           bestScore = score;
@@ -401,9 +467,9 @@ const matchUsers = async (userId, mode) => {
         if (blocked.has(candidateId)) {
           return;
         }
-        const order = queueOrder.get(candidateId) ?? Number.POSITIVE_INFINITY;
-        if (order < bestOrder) {
-          bestOrder = order;
+        const score = queueScores.get(candidateId) ?? Number.POSITIVE_INFINITY;
+        if (score < bestScore || bestScore === -1) {
+          bestScore = score;
           bestCandidate = candidateId;
         }
       });
@@ -417,6 +483,8 @@ const matchUsers = async (userId, mode) => {
     await removeFromQueue(redisClient, bestCandidate, queueKey);
     pairings.set(userId, bestCandidate);
     pairings.set(bestCandidate, userId);
+    expandedSearchNotified.delete(userId);
+    expandedSearchNotified.delete(bestCandidate);
     const session = createSession(userId, bestCandidate, mode);
 
     let partnerProfile = null;
@@ -462,8 +530,13 @@ const matchUsers = async (userId, mode) => {
 };
 
 const handleSkip = async (userId, reason = "skipped") => {
+  if (skipLocks.has(userId)) {
+    return;
+  }
+  skipLocks.add(userId);
   const partnerId = pairings.get(userId);
   if (!partnerId) {
+    skipLocks.delete(userId);
     return;
   }
   const sessionKey = sessionByUser.get(userId);
@@ -472,29 +545,38 @@ const handleSkip = async (userId, reason = "skipped") => {
   pairings.delete(userId);
   pairings.delete(partnerId);
   clearSession(userId);
+  expandedSearchNotified.delete(userId);
+  expandedSearchNotified.delete(partnerId);
 
   const partnerSocketId = socketByUser.get(partnerId);
   const userSocketId = socketByUser.get(userId);
   const partnerTranslator = getTranslatorForUser(partnerId);
   const userTranslator = getTranslatorForUser(userId);
 
-  if (partnerSocketId) {
-    io.to(partnerSocketId).emit("partner_left", { reason });
-    io.to(partnerSocketId).emit("match_searching", {
-      message: partnerTranslator("match.searching")
-    });
-  }
-  if (userSocketId) {
-    io.to(userSocketId).emit("match_searching", {
-      message: userTranslator("match.searching")
-    });
-  }
+  try {
+    if (partnerSocketId) {
+      io.to(partnerSocketId).emit("partner_left", {
+        reason,
+        systemMessage: partnerTranslator("match.partnerLeft")
+      });
+      io.to(partnerSocketId).emit("match_searching", {
+        message: partnerTranslator("match.searching")
+      });
+    }
+    if (userSocketId) {
+      io.to(userSocketId).emit("match_searching", {
+        message: userTranslator("match.searching")
+      });
+    }
 
-  await removeFromQueue(redisClient, userId, queueKeyForMode(mode));
-  await removeFromQueue(redisClient, partnerId, queueKeyForMode(mode));
-  await enqueueMatchmaking(redisClient, userId, queueKeyForMode(mode));
-  await enqueueMatchmaking(redisClient, partnerId, queueKeyForMode(mode));
-  await Promise.all([matchUsers(userId, mode), matchUsers(partnerId, mode)]);
+    await removeFromQueue(redisClient, userId, queueKeyForMode(mode));
+    await removeFromQueue(redisClient, partnerId, queueKeyForMode(mode));
+    await enqueueMatchmaking(redisClient, userId, queueKeyForMode(mode));
+    await enqueueMatchmaking(redisClient, partnerId, queueKeyForMode(mode));
+    await Promise.all([matchUsers(userId, mode), matchUsers(partnerId, mode)]);
+  } finally {
+    skipLocks.delete(userId);
+  }
 };
 
 const createFriendship = async (userId, partnerId) => {
@@ -533,11 +615,11 @@ const resolveUploadPath = (imageUrl) => {
 const cleanupOldMedia = async () => {
   const cutoff = new Date(Date.now() - mediaRetentionDays * 24 * 60 * 60 * 1000);
   const reportResult = await pool.query(
-    "SELECT id, image_url FROM reports WHERE image_url IS NOT NULL AND created_at < $1",
+    "UPDATE reports SET image_url = NULL WHERE image_url IS NOT NULL AND created_at < $1 RETURNING id, image_url",
     [cutoff]
   );
   const messageResult = await pool.query(
-    "SELECT id, image_url FROM friend_messages WHERE image_url IS NOT NULL AND created_at < $1",
+    "UPDATE friend_messages SET image_url = NULL WHERE image_url IS NOT NULL AND created_at < $1 RETURNING id, image_url",
     [cutoff]
   );
 
@@ -554,19 +636,6 @@ const cleanupOldMedia = async () => {
 
   await deleteFiles(reportResult.rows);
   await deleteFiles(messageResult.rows);
-
-  if (reportResult.rows.length) {
-    await pool.query(
-      "UPDATE reports SET image_url = NULL WHERE id = ANY($1)",
-      [reportResult.rows.map((row) => row.id)]
-    );
-  }
-  if (messageResult.rows.length) {
-    await pool.query(
-      "UPDATE friend_messages SET image_url = NULL WHERE id = ANY($1)",
-      [messageResult.rows.map((row) => row.id)]
-    );
-  }
   addLog("info", "Media cleanup complete", {
     reports: reportResult.rows.length,
     messages: messageResult.rows.length
@@ -628,6 +697,7 @@ io.on("connection", async (socket) => {
       }
       const mode = payload?.mode === "meet" ? "meet" : "talk";
       userModes.set(userId, mode);
+      expandedSearchNotified.delete(userId);
       await removeFromQueue(redisClient, userId, QUEUE_KEY_TALK);
       await removeFromQueue(redisClient, userId, QUEUE_KEY_MEET);
 
@@ -692,19 +762,31 @@ io.on("connection", async (socket) => {
         return;
       }
       const messageId = randomUUID();
+      const sessionKey = sessionByUser.get(userId);
+      const session = sessionKey ? sessions.get(sessionKey) : null;
+      const isMeetSession = session?.mode === "meet";
+      const shouldHideImage = Boolean(payload?.image && isMeetSession && !session?.revealGranted);
+
+      if (shouldHideImage && session) {
+        session.pendingImages.set(messageId, {
+          imageUrl: payload.image,
+          senderId: userId
+        });
+      }
+
       const outgoing = {
         id: messageId,
         clientId: payload?.clientId,
         text: String(payload?.text || ""),
         createdAt: payload?.createdAt || Date.now(),
         userId,
-        image: payload?.image,
+        image: shouldHideImage ? null : payload?.image,
+        imagePending: shouldHideImage,
         replyTo: payload?.replyTo
       };
       io.to(partnerSocketId).emit("message", outgoing);
-      const sessionKey = sessionByUser.get(userId);
-      const session = sessionKey ? sessions.get(sessionKey) : null;
-      if (session?.mode === "meet") {
+
+      if (isMeetSession) {
         session.chatters.add(userId);
         if (session.chatters.size >= 2) {
           startRevealTimer(session);
@@ -755,6 +837,29 @@ io.on("connection", async (socket) => {
       }
     });
 
+    socket.on("update_profile", async (payload, ack) => {
+      try {
+        const result = await upsertProfileForSocket(userId, payload);
+        if (result.error) {
+          const message = t(result.error);
+          socket.emit("profile_required", { message });
+          if (typeof ack === "function") {
+            ack({ ok: false, error: result.error });
+          }
+          return;
+        }
+        if (typeof ack === "function") {
+          ack({ ok: true, profile: result.profile });
+        }
+      } catch (err) {
+        const message = t("errors.failedProfileSave");
+        socket.emit("profile_required", { message });
+        if (typeof ack === "function") {
+          ack({ ok: false, error: "errors.failedProfileSave" });
+        }
+      }
+    });
+
     socket.on("reveal_request", async () => {
       const sessionKey = sessionByUser.get(userId);
       const session = sessionKey ? sessions.get(sessionKey) : null;
@@ -763,12 +868,26 @@ io.on("connection", async (socket) => {
       }
       session.revealRequests.add(userId);
       if (session.revealRequests.size >= 2) {
+        session.revealGranted = true;
         session.users.forEach((participantId) => {
           const participantSocketId = socketByUser.get(participantId);
           if (participantSocketId) {
             io.to(participantSocketId).emit("reveal_confirmed");
           }
         });
+        if (session.pendingImages.size > 0) {
+          const images = Array.from(session.pendingImages.entries()).map(([messageId, entry]) => ({
+            messageId,
+            imageUrl: entry.imageUrl
+          }));
+          session.pendingImages.clear();
+          session.users.forEach((participantId) => {
+            const participantSocketId = socketByUser.get(participantId);
+            if (participantSocketId) {
+              io.to(participantSocketId).emit("reveal_granted", { images });
+            }
+          });
+        }
       }
     });
 
@@ -864,6 +983,7 @@ io.on("connection", async (socket) => {
         return;
       }
       userModes.delete(disconnectedId);
+      expandedSearchNotified.delete(disconnectedId);
       await removeFromQueue(redisClient, disconnectedId, QUEUE_KEY_TALK);
       await removeFromQueue(redisClient, disconnectedId, QUEUE_KEY_MEET);
 
@@ -875,9 +995,13 @@ io.on("connection", async (socket) => {
         pairings.delete(disconnectedId);
         pairings.delete(partnerId);
         clearSession(disconnectedId);
+        expandedSearchNotified.delete(partnerId);
         const partnerSocketId = socketByUser.get(partnerId);
         if (partnerSocketId) {
-          io.to(partnerSocketId).emit("partner_left", { reason: "left" });
+          io.to(partnerSocketId).emit("partner_left", {
+            reason: "left",
+            systemMessage: getTranslatorForUser(partnerId)("match.partnerLeft")
+          });
           io.to(partnerSocketId).emit("match_searching", {
             message: getTranslatorForUser(partnerId)("match.searching")
           });

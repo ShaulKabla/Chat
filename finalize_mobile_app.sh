@@ -190,8 +190,10 @@ cat <<'EOT' > src/locales/en.json
     "send": "Send",
     "addPhoto": "＋",
     "tapToReveal": "Reveal after 7 minutes",
+    "photoHidden": "Hidden until reveal",
     "revealAvailable": "Reveal available",
     "revealButton": "Reveal",
+    "revealCountdown": "Reveal in {{time}}",
     "revealWaiting": "Reveal after 7 minutes of chat",
     "revealTitle": "7-Minute Reveal",
     "termsPrefix": "By chatting you agree to our",
@@ -337,8 +339,10 @@ cat <<'EOT' > src/locales/he.json
     "send": "Send",
     "addPhoto": "＋",
     "tapToReveal": "Reveal after 7 minutes",
+    "photoHidden": "Hidden until reveal",
     "revealAvailable": "Reveal available",
     "revealButton": "Reveal",
+    "revealCountdown": "Reveal in {{time}}",
     "revealWaiting": "Reveal after 7 minutes of chat",
     "revealTitle": "7-Minute Reveal",
     "termsPrefix": "By chatting you agree to our",
@@ -561,6 +565,7 @@ export type ChatMessage = {
   createdAt: number;
   userId: string;
   image?: string;
+  imagePending?: boolean;
   status: MessageStatus;
   replyTo?: ReplyReference;
 };
@@ -620,6 +625,7 @@ export type ChatState = {
   isMatching: boolean;
   revealAvailable: boolean;
   revealConfirmed: boolean;
+  revealAt: number | null;
   messages: ChatMessage[];
   blockedUsers: string[];
   termsAccepted: boolean;
@@ -644,9 +650,11 @@ export type ChatState = {
   setMatching: (matching: boolean) => void;
   setRevealAvailable: (available: boolean) => void;
   setRevealConfirmed: (confirmed: boolean) => void;
+  setRevealAt: (revealAt: number | null) => void;
   addMessage: (message: ChatMessage) => void;
   updateMessageStatus: (id: string, status: MessageStatus) => void;
   updateMessage: (id: string, updates: Partial<ChatMessage>) => void;
+  updateMessageByServerId: (serverId: string, updates: Partial<ChatMessage>) => void;
   setMessages: (messages: ChatMessage[]) => void;
   addBlockedUser: (userId: string) => void;
   acceptTerms: () => void;
@@ -677,6 +685,7 @@ export const useChatStore = create<ChatState>()(
       isMatching: true,
       revealAvailable: false,
       revealConfirmed: false,
+      revealAt: null,
       messages: [],
       blockedUsers: [],
       termsAccepted: false,
@@ -701,6 +710,7 @@ export const useChatStore = create<ChatState>()(
       setMatching: matching => set({ isMatching: matching }),
       setRevealAvailable: available => set({ revealAvailable: available }),
       setRevealConfirmed: confirmed => set({ revealConfirmed: confirmed }),
+      setRevealAt: revealAt => set({ revealAt }),
       addMessage: message => set(state => ({ messages: [message, ...state.messages] })),
       updateMessageStatus: (id, status) =>
         set(state => ({
@@ -712,6 +722,12 @@ export const useChatStore = create<ChatState>()(
         set(state => ({
           messages: state.messages.map(message =>
             message.id === id ? { ...message, ...updates } : message,
+          ),
+        })),
+      updateMessageByServerId: (serverId, updates) =>
+        set(state => ({
+          messages: state.messages.map(message =>
+            message.serverId === serverId ? { ...message, ...updates } : message,
           ),
         })),
       setMessages: messages => set({ messages }),
@@ -749,6 +765,7 @@ export const useChatStore = create<ChatState>()(
           isMatching: true,
           revealAvailable: false,
           revealConfirmed: false,
+          revealAt: null,
           messages: [],
           blockedUsers: [],
           termsAccepted: false,
@@ -821,6 +838,7 @@ class SocketService {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private manuallyDisconnected = false;
+  private authFailed = false;
 
   async connect() {
     const {
@@ -836,6 +854,7 @@ class SocketService {
       setMatching,
       setRevealAvailable,
       setRevealConfirmed,
+      setRevealAt,
       setMessages,
       addMessage,
       setMaintenance,
@@ -881,17 +900,25 @@ class SocketService {
     this.socket.on('connect', () => {
       setConnection(true);
       this.reconnectAttempts = 0;
+      this.authFailed = false;
       this.clearReconnectTimer();
     });
     this.socket.on('disconnect', () => {
       setConnection(false);
-      if (!this.manuallyDisconnected) {
+      if (!this.manuallyDisconnected && !this.authFailed) {
         this.scheduleReconnect();
       }
     });
     this.socket.on('connect_error', (error: { message?: string }) => {
       setSystemNotice({ type: 'warning', message: error.message ?? i18n.t('errors.connectionError') });
-      this.scheduleReconnect();
+      if (!this.authFailed) {
+        this.scheduleReconnect();
+      }
+    });
+    this.socket.on('user:id', payload => {
+      if (payload?.userId) {
+        setUserId(payload.userId);
+      }
     });
     this.socket.on('user:id', payload => {
       if (payload?.userId) {
@@ -903,6 +930,7 @@ class SocketService {
       setMatchMode(payload?.mode === 'meet' ? 'meet' : 'talk');
       setRevealAvailable(Boolean(payload?.revealAvailable));
       setRevealConfirmed(false);
+      setRevealAt(null);
       setPendingConnectRequest(null);
       setMessages([]);
       if (payload?.partnerProfile) {
@@ -924,6 +952,7 @@ class SocketService {
       setMatching(true);
       setRevealAvailable(false);
       setRevealConfirmed(false);
+      setRevealAt(null);
       setPendingConnectRequest(null);
       setMessages([]);
       if (payload?.message) {
@@ -931,7 +960,7 @@ class SocketService {
       }
     });
     this.socket.on('message', payload => {
-      const image = resolveMessageImage(payload, AppConfig.apiUrl);
+      const image = payload?.image ? resolveMessageImage(payload, AppConfig.apiUrl) : undefined;
       const text = image && payload.text ? payload.text.replace(image, '').trim() : payload.text ?? '';
       const incoming: ChatMessage = {
         id: payload.clientId ?? payload.id,
@@ -940,6 +969,7 @@ class SocketService {
         createdAt: new Date(payload.createdAt).getTime(),
         userId: payload.userId,
         image,
+        imagePending: Boolean(payload?.imagePending),
         status: 'delivered',
         replyTo: payload.replyTo,
       };
@@ -955,14 +985,18 @@ class SocketService {
         serverId: payload.messageId,
       });
     });
-    this.socket.on('partner_left', () => {
+    this.socket.on('partner_left', payload => {
       setPartner('');
       setPartnerProfile(null);
       setMatching(true);
       setRevealAvailable(false);
       setRevealConfirmed(false);
+      setRevealAt(null);
       setPendingConnectRequest(null);
       setMessages([]);
+      if (payload?.systemMessage) {
+        setSystemNotice({ type: 'warning', message: payload.systemMessage });
+      }
     });
     this.socket.on('typing', () => setPartnerTyping(true));
     this.socket.on('stop_typing', () => setPartnerTyping(false));
@@ -995,9 +1029,17 @@ class SocketService {
         type: 'error',
         message: payload?.message ?? i18n.t('notifications.authError'),
       });
+      this.authFailed = true;
+      this.manuallyDisconnected = true;
+      this.clearReconnectTimer();
+      this.socket?.disconnect();
     });
     this.socket.on('banned', (payload?: { message?: string }) => {
       setSystemNotice({ type: 'error', message: payload?.message ?? i18n.t('notifications.banned') });
+      this.authFailed = true;
+      this.manuallyDisconnected = true;
+      this.clearReconnectTimer();
+      this.socket?.disconnect();
     });
     this.socket.on('rate_limit', () => {
       setSystemNotice({ type: 'warning', message: i18n.t('notifications.rateLimited') });
@@ -1016,8 +1058,29 @@ class SocketService {
     this.socket.on('reveal_available', () => {
       setRevealAvailable(true);
     });
+    this.socket.on('reveal_timer_started', payload => {
+      if (payload?.revealAt) {
+        setRevealAt(payload.revealAt);
+      }
+    });
     this.socket.on('reveal_confirmed', () => {
       setRevealConfirmed(true);
+      setRevealAt(null);
+    });
+    this.socket.on('reveal_granted', payload => {
+      if (payload?.images?.length) {
+        payload.images.forEach((entry: { messageId: string; imageUrl: string }) => {
+          useChatStore.getState().updateMessageByServerId(entry.messageId, {
+            image: normalizeImageUrl(entry.imageUrl, AppConfig.apiUrl),
+            imagePending: false,
+          });
+        });
+      }
+    });
+    this.socket.on('search_expanding', payload => {
+      if (payload?.message) {
+        setSystemNotice({ type: 'warning', message: payload.message });
+      }
     });
     this.socket.on('friend_message', payload => {
       if (!payload?.senderId || !payload?.recipientId) {
@@ -1049,13 +1112,21 @@ class SocketService {
   }
 
   skipMatch() {
-    const { setPartner, setPartnerProfile, setMatching, setMessages, setRevealAvailable, setRevealConfirmed } =
-      useChatStore.getState();
+    const {
+      setPartner,
+      setPartnerProfile,
+      setMatching,
+      setMessages,
+      setRevealAvailable,
+      setRevealConfirmed,
+      setRevealAt,
+    } = useChatStore.getState();
     setPartner('');
     setPartnerProfile(null);
     setMatching(true);
     setRevealAvailable(false);
     setRevealConfirmed(false);
+    setRevealAt(null);
     setMessages([]);
     this.socket?.emit('skip');
   }
@@ -1528,7 +1599,14 @@ import React from 'react';
 import { I18nManager, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import LinearGradient from 'react-native-linear-gradient';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  FadeInDown,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { useTranslation } from 'react-i18next';
 import { colors } from '../theme/colors';
 import { useChatStore } from '../store/useChatStore';
@@ -1764,7 +1842,14 @@ import { FlashList } from '@shopify/flash-list';
 import { useNavigation } from '@react-navigation/native';
 import FastImage from 'react-native-fast-image';
 import { Swipeable } from 'react-native-gesture-handler';
-import Animated, { FadeInDown } from 'react-native-reanimated';
+import Animated, {
+  FadeInDown,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { launchImageLibrary } from 'react-native-image-picker';
 import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
 import { useTranslation } from 'react-i18next';
@@ -1791,6 +1876,7 @@ const MessageBubble = React.memo(
     labels: {
       reply: string;
       tapToReveal: string;
+      photoHidden: string;
       retry: string;
       status: Record<ChatMessage['status'], string>;
       photo: string;
@@ -1805,6 +1891,17 @@ const MessageBubble = React.memo(
       : message.replyTo?.image
         ? `↪ ${labels.photo}`
         : undefined;
+    const blurProgress = useSharedValue(blurImage ? 1 : 0);
+    const blurStyle = useAnimatedStyle(() => ({
+      opacity: blurProgress.value,
+    }));
+    const clearStyle = useAnimatedStyle(() => ({
+      opacity: 1 - blurProgress.value,
+    }));
+
+    useEffect(() => {
+      blurProgress.value = withTiming(blurImage ? 1 : 0, { duration: 420 });
+    }, [blurImage, blurProgress]);
 
     return (
       <Swipeable
@@ -1818,22 +1915,38 @@ const MessageBubble = React.memo(
           onReply();
         }}
       >
-        <Animated.View entering={FadeInDown} style={[styles.messageRow, isOwn && styles.messageRowOwn]}>
+        <Animated.View
+          entering={FadeInDown}
+          style={[styles.messageRow, isOwn ? styles.messageRowOwn : styles.messageRowPartner]}
+        >
           <View style={[styles.bubble, bubbleStyle]}>
             {replyLabel ? <Text style={styles.replyText}>{replyLabel}</Text> : null}
             {message.image ? (
-              <View>
-                <FastImage
-                  source={{ uri: message.image }}
-                  style={styles.imageMessage}
-                  resizeMode={FastImage.resizeMode.cover}
-                  blurRadius={blurImage ? 20 : 0}
-                />
+              <View style={styles.imageWrapper}>
+                <Animated.View style={[styles.imageLayer, blurStyle]}>
+                  <FastImage
+                    source={{ uri: message.image }}
+                    style={styles.imageMessage}
+                    resizeMode={FastImage.resizeMode.cover}
+                    blurRadius={20}
+                  />
+                </Animated.View>
+                <Animated.View style={[styles.imageLayer, clearStyle]}>
+                  <FastImage
+                    source={{ uri: message.image }}
+                    style={styles.imageMessage}
+                    resizeMode={FastImage.resizeMode.cover}
+                  />
+                </Animated.View>
                 {blurImage ? (
-                  <View style={styles.blurOverlay}>
+                  <Animated.View style={[styles.blurOverlay, blurStyle]}>
                     <Text style={styles.blurText}>{labels.tapToReveal}</Text>
-                  </View>
+                  </Animated.View>
                 ) : null}
+              </View>
+            ) : message.imagePending ? (
+              <View style={styles.imagePlaceholder}>
+                <Text style={styles.imagePlaceholderText}>{labels.photoHidden}</Text>
               </View>
             ) : null}
             {message.text ? <Text style={[styles.messageText, textStyle]}>{message.text}</Text> : null}
@@ -1875,12 +1988,25 @@ export const ChatScreen = () => {
     matchMode,
     revealAvailable,
     revealConfirmed,
+    revealAt,
   } = useChatStore();
   const [draft, setDraft] = useState('');
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [revealRequested, setRevealRequested] = useState(false);
+  const [revealCountdownMs, setRevealCountdownMs] = useState<number | null>(null);
   const typingTimeout = useRef<NodeJS.Timeout | null>(null);
   const { t } = useTranslation();
+  const isRTL = I18nManager.isRTL;
+
+  const pulse = useSharedValue(1);
+  const pulseStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pulse.value }],
+    opacity: 0.7 + 0.3 * pulse.value,
+  }));
+
+  useEffect(() => {
+    pulse.value = withRepeat(withSequence(withTiming(1.05, { duration: 800 }), withTiming(1, { duration: 800 })), -1);
+  }, [pulse]);
 
   const sortedMessages = useMemo(() => messages, [messages]);
   const statusLabels = useMemo(
@@ -1904,6 +2030,20 @@ export const ChatScreen = () => {
       setRevealRequested(false);
     }
   }, [revealConfirmed]);
+
+  useEffect(() => {
+    if (!revealAt || revealAvailable || revealConfirmed) {
+      setRevealCountdownMs(null);
+      return;
+    }
+    const tick = () => {
+      const remaining = Math.max(0, revealAt - Date.now());
+      setRevealCountdownMs(remaining);
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [revealAt, revealAvailable, revealConfirmed]);
 
   useEffect(() => {
     if (partnerId) {
@@ -2023,7 +2163,7 @@ export const ChatScreen = () => {
   const renderItem = useCallback(
     ({ item }: { item: ChatMessage }) => {
       const isOwn = item.userId === userId;
-      const shouldBlur = matchMode === 'meet' && !revealConfirmed && !isOwn;
+      const shouldBlur = matchMode === 'meet' && !revealConfirmed;
       return (
         <MessageBubble
           message={item}
@@ -2032,6 +2172,7 @@ export const ChatScreen = () => {
           labels={{
             reply: t('chat.reply'),
             tapToReveal: t('chat.tapToReveal'),
+            photoHidden: t('chat.photoHidden'),
             retry: t('chat.retry'),
             photo: t('misc.photo'),
             status: statusLabels,
@@ -2056,6 +2197,16 @@ export const ChatScreen = () => {
   const replyName = replyTo?.userId === userId ? t('misc.you') : t('misc.partner');
   const replyPreview = replyTo?.text || t('misc.photo');
 
+  const revealCountdownText = useMemo(() => {
+    if (!revealCountdownMs) {
+      return null;
+    }
+    const totalSeconds = Math.ceil(revealCountdownMs / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }, [revealCountdownMs]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -2073,6 +2224,14 @@ export const ChatScreen = () => {
                   <Text style={styles.tagText}>{tag}</Text>
                 </View>
               ))}
+            </View>
+          ) : null}
+          {matchMode === 'meet' && revealCountdownText ? (
+            <View style={[styles.revealCountdown, isRTL && styles.revealCountdownRtl]}>
+              <Animated.View style={[styles.revealPulse, pulseStyle]} />
+              <Text style={styles.revealCountdownText}>
+                {t('chat.revealCountdown', { time: revealCountdownText })}
+              </Text>
             </View>
           ) : null}
         </View>
@@ -2240,6 +2399,22 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
   },
+  revealCountdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+    gap: 6,
+  },
+  revealCountdownRtl: {
+    flexDirection: 'row-reverse',
+  },
+  revealPulse: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: colors.accentGlow,
+  },
+  revealCountdownText: { color: colors.textSecondary, fontSize: 12 },
   headerButton: {
     paddingVertical: 6,
     paddingHorizontal: 12,
@@ -2283,7 +2458,8 @@ const styles = StyleSheet.create({
   systemNoticeText: { color: colors.textSecondary, textAlign: 'center' },
   messageList: { paddingHorizontal: 16, paddingVertical: 12 },
   messageRow: { flexDirection: I18nManager.isRTL ? 'row-reverse' : 'row', marginBottom: 12 },
-  messageRowOwn: { justifyContent: I18nManager.isRTL ? 'flex-start' : 'flex-end' },
+  messageRowOwn: { justifyContent: I18nManager.isRTL ? 'flex-end' : 'flex-start' },
+  messageRowPartner: { justifyContent: I18nManager.isRTL ? 'flex-start' : 'flex-end' },
   bubble: {
     maxWidth: '80%',
     padding: 12,
@@ -2294,7 +2470,9 @@ const styles = StyleSheet.create({
   messageText: { fontSize: 15, lineHeight: 20 },
   textIncoming: { color: colors.textPrimary },
   textOutgoing: { color: '#E6FFFA' },
-  imageMessage: { width: 220, height: 180, borderRadius: 12, marginBottom: 8 },
+  imageWrapper: { width: 220, height: 180, marginBottom: 8, borderRadius: 12, overflow: 'hidden' },
+  imageLayer: { position: 'absolute', top: 0, left: 0 },
+  imageMessage: { width: 220, height: 180, borderRadius: 12 },
   blurOverlay: {
     position: 'absolute',
     inset: 0,
@@ -2304,6 +2482,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   blurText: { color: colors.textPrimary, fontWeight: '600' },
+  imagePlaceholder: {
+    width: 220,
+    height: 180,
+    borderRadius: 12,
+    backgroundColor: colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  imagePlaceholderText: { color: colors.textSecondary },
   replyText: { color: colors.textSecondary, fontSize: 12, marginBottom: 6 },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
   statusText: { color: colors.textSecondary, fontSize: 11 },
