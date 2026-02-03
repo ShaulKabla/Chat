@@ -409,9 +409,7 @@ const matchUsers = async (userId, mode) => {
     const queueOrder = new Map(queueCandidates.map((entry, index) => [entry.value, index]));
     const queueScores = new Map(queueCandidates.map((entry) => [entry.value, Number(entry.score)]));
 
-    let bestCandidate = null;
-    let bestScore = -1;
-    let bestOrder = Number.POSITIVE_INFINITY;
+    const candidatePool = [];
 
     if (mode === "meet") {
       const profile = await fetchProfile(userId);
@@ -464,11 +462,7 @@ const matchUsers = async (userId, mode) => {
           return;
         }
         const order = queueOrder.get(candidateId) ?? Number.POSITIVE_INFINITY;
-        if (score > bestScore || (score === bestScore && order < bestOrder)) {
-          bestScore = score;
-          bestOrder = order;
-          bestCandidate = candidateId;
-        }
+        candidatePool.push({ candidateId, score, order });
       });
     } else {
       candidateIds.forEach((candidateId) => {
@@ -476,21 +470,37 @@ const matchUsers = async (userId, mode) => {
           return;
         }
         const score = queueScores.get(candidateId) ?? Number.POSITIVE_INFINITY;
-        if (score < bestScore || bestScore === -1) {
-          bestScore = score;
-          bestCandidate = candidateId;
-        }
+        candidatePool.push({ candidateId, score });
       });
     }
 
+    if (!candidatePool.length) {
+      return;
+    }
+
+    candidatePool.sort((a, b) => {
+      if (mode === "meet") {
+        if (b.score !== a.score) {
+          return b.score - a.score;
+        }
+        return (a.order ?? Number.POSITIVE_INFINITY) - (b.order ?? Number.POSITIVE_INFINITY);
+      }
+      return (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY);
+    });
+
+    let bestCandidate = null;
+    for (const candidate of candidatePool) {
+      if (matchingLocks.has(candidate.candidateId)) {
+        continue;
+      }
+      bestCandidate = candidate.candidateId;
+      matchingLocks.add(bestCandidate);
+      candidateLocked = bestCandidate;
+      break;
+    }
     if (!bestCandidate) {
       return;
     }
-    if (matchingLocks.has(bestCandidate)) {
-      return;
-    }
-    matchingLocks.add(bestCandidate);
-    candidateLocked = bestCandidate;
 
     await removeFromQueue(redisClient, userId, queueKey);
     await removeFromQueue(redisClient, bestCandidate, queueKey);
