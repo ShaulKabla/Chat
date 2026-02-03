@@ -920,6 +920,11 @@ class SocketService {
         setUserId(payload.userId);
       }
     });
+    this.socket.on('user:id', payload => {
+      if (payload?.userId) {
+        setUserId(payload.userId);
+      }
+    });
     this.socket.on('match_found', payload => {
       setPartner(payload.partnerId);
       setMatchMode(payload?.mode === 'meet' ? 'meet' : 'talk');
