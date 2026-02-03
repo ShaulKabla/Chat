@@ -35,7 +35,8 @@ const {
   getStats,
   getReported,
   banUser,
-  updateMaintenance
+  updateMaintenance,
+  getSystemSnapshot
 } = require("./controllers/adminController");
 const { getConfig } = require("./controllers/configController");
 const { submitReport } = require("./controllers/reportController");
@@ -70,6 +71,12 @@ const sessions = new Map();
 const sessionByUser = new Map();
 const userModes = new Map();
 const expandedSearchNotified = new Map();
+const mediaCleanupStatus = {
+  lastRunAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+  lastResult: null
+};
 
 const uploadsDir = process.env.UPLOADS_DIR || path.resolve(__dirname, "../uploads");
 const revealDelayMs = Number(process.env.REVEAL_DELAY_MS || 7 * 60 * 1000);
@@ -102,13 +109,13 @@ const uploadLimiter = createLimiter({
 });
 
 const chatRateLimit = {
-  windowSeconds: Number(process.env.CHAT_WINDOW_SEC || 5),
-  max: Number(process.env.CHAT_MAX || 20)
+  windowSeconds: Number(process.env.CHAT_WINDOW_SEC || 1),
+  max: Number(process.env.CHAT_MAX || 5)
 };
 
 const skipRateLimit = {
-  windowSeconds: Number(process.env.SKIP_WINDOW_SEC || 30),
-  max: Number(process.env.SKIP_MAX || 6)
+  windowSeconds: Number(process.env.SKIP_WINDOW_SEC || 300),
+  max: Number(process.env.SKIP_MAX || 10)
 };
 
 const connectRateLimit = {
@@ -384,6 +391,7 @@ const matchUsers = async (userId, mode) => {
     return;
   }
   matchingLocks.add(userId);
+  let candidateLocked = null;
   try {
     if (pairings.has(userId)) {
       return;
@@ -478,6 +486,11 @@ const matchUsers = async (userId, mode) => {
     if (!bestCandidate) {
       return;
     }
+    if (matchingLocks.has(bestCandidate)) {
+      return;
+    }
+    matchingLocks.add(bestCandidate);
+    candidateLocked = bestCandidate;
 
     await removeFromQueue(redisClient, userId, queueKey);
     await removeFromQueue(redisClient, bestCandidate, queueKey);
@@ -526,6 +539,9 @@ const matchUsers = async (userId, mode) => {
     addLog("info", "Users paired", { userId, partnerId: bestCandidate });
   } finally {
     matchingLocks.delete(userId);
+    if (candidateLocked) {
+      matchingLocks.delete(candidateLocked);
+    }
   }
 };
 
@@ -534,26 +550,32 @@ const handleSkip = async (userId, reason = "skipped") => {
     return;
   }
   skipLocks.add(userId);
-  const partnerId = pairings.get(userId);
-  if (!partnerId) {
-    skipLocks.delete(userId);
-    return;
-  }
-  const sessionKey = sessionByUser.get(userId);
-  const session = sessionKey ? sessions.get(sessionKey) : null;
-  const mode = session?.mode || userModes.get(userId) || "talk";
-  pairings.delete(userId);
-  pairings.delete(partnerId);
-  clearSession(userId);
-  expandedSearchNotified.delete(userId);
-  expandedSearchNotified.delete(partnerId);
-
-  const partnerSocketId = socketByUser.get(partnerId);
-  const userSocketId = socketByUser.get(userId);
-  const partnerTranslator = getTranslatorForUser(partnerId);
-  const userTranslator = getTranslatorForUser(userId);
-
+  let partnerLocked = null;
   try {
+    const partnerId = pairings.get(userId);
+    if (!partnerId) {
+      return;
+    }
+    if (skipLocks.has(partnerId)) {
+      return;
+    }
+    skipLocks.add(partnerId);
+    partnerLocked = partnerId;
+
+    const sessionKey = sessionByUser.get(userId);
+    const session = sessionKey ? sessions.get(sessionKey) : null;
+    const mode = session?.mode || userModes.get(userId) || "talk";
+    pairings.delete(userId);
+    pairings.delete(partnerId);
+    clearSession(userId);
+    expandedSearchNotified.delete(userId);
+    expandedSearchNotified.delete(partnerId);
+
+    const partnerSocketId = socketByUser.get(partnerId);
+    const userSocketId = socketByUser.get(userId);
+    const partnerTranslator = getTranslatorForUser(partnerId);
+    const userTranslator = getTranslatorForUser(userId);
+
     if (partnerSocketId) {
       io.to(partnerSocketId).emit("partner_left", {
         reason,
@@ -576,6 +598,9 @@ const handleSkip = async (userId, reason = "skipped") => {
     await Promise.all([matchUsers(userId, mode), matchUsers(partnerId, mode)]);
   } finally {
     skipLocks.delete(userId);
+    if (partnerLocked) {
+      skipLocks.delete(partnerLocked);
+    }
   }
 };
 
@@ -613,33 +638,45 @@ const resolveUploadPath = (imageUrl) => {
 };
 
 const cleanupOldMedia = async () => {
+  mediaCleanupStatus.lastRunAt = Date.now();
   const cutoff = new Date(Date.now() - mediaRetentionDays * 24 * 60 * 60 * 1000);
-  const reportResult = await pool.query(
-    "UPDATE reports SET image_url = NULL WHERE image_url IS NOT NULL AND created_at < $1 RETURNING id, image_url",
-    [cutoff]
-  );
-  const messageResult = await pool.query(
-    "UPDATE friend_messages SET image_url = NULL WHERE image_url IS NOT NULL AND created_at < $1 RETURNING id, image_url",
-    [cutoff]
-  );
-
-  const deleteFiles = async (rows) => {
-    await Promise.all(
-      rows.map(async (row) => {
-        const filePath = resolveUploadPath(row.image_url);
-        if (filePath) {
-          await fs.unlink(filePath).catch(() => {});
-        }
-      })
+  try {
+    const reportResult = await pool.query(
+      "UPDATE reports SET image_url = NULL WHERE image_url IS NOT NULL AND created_at < $1 RETURNING id, image_url",
+      [cutoff]
     );
-  };
+    const messageResult = await pool.query(
+      "UPDATE friend_messages SET image_url = NULL WHERE image_url IS NOT NULL AND created_at < $1 RETURNING id, image_url",
+      [cutoff]
+    );
 
-  await deleteFiles(reportResult.rows);
-  await deleteFiles(messageResult.rows);
-  addLog("info", "Media cleanup complete", {
-    reports: reportResult.rows.length,
-    messages: messageResult.rows.length
-  });
+    const deleteFiles = async (rows) => {
+      await Promise.all(
+        rows.map(async (row) => {
+          const filePath = resolveUploadPath(row.image_url);
+          if (filePath) {
+            await fs.unlink(filePath).catch(() => {});
+          }
+        })
+      );
+    };
+
+    await deleteFiles(reportResult.rows);
+    await deleteFiles(messageResult.rows);
+    mediaCleanupStatus.lastSuccessAt = Date.now();
+    mediaCleanupStatus.lastError = null;
+    mediaCleanupStatus.lastResult = {
+      reports: reportResult.rows.length,
+      messages: messageResult.rows.length
+    };
+    addLog("info", "Media cleanup complete", {
+      reports: reportResult.rows.length,
+      messages: messageResult.rows.length
+    });
+  } catch (err) {
+    mediaCleanupStatus.lastError = err.message;
+    throw err;
+  }
 };
 
 adminNamespace.use(async (socket, next) => {
@@ -722,6 +759,7 @@ io.on("connection", async (socket) => {
       );
       if (!allowed) {
         socket.emit("rate_limit", { scope: "skip" });
+        socket.emit("rate_limit_reached", { scope: "skip" });
         return;
       }
       await handleSkip(userId, "skipped");
@@ -736,6 +774,7 @@ io.on("connection", async (socket) => {
       );
       if (!allowed) {
         socket.emit("rate_limit", { scope: "chat" });
+        socket.emit("rate_limit_reached", { scope: "chat" });
         socket.emit("message_ack", {
           ok: false,
           clientId: payload?.clientId,
@@ -765,11 +804,13 @@ io.on("connection", async (socket) => {
       const sessionKey = sessionByUser.get(userId);
       const session = sessionKey ? sessions.get(sessionKey) : null;
       const isMeetSession = session?.mode === "meet";
-      const shouldHideImage = Boolean(payload?.image && isMeetSession && !session?.revealGranted);
+      const imagePreview = payload?.imagePreview || payload?.image || null;
+      const imageSource = payload?.imageSource || payload?.image || null;
+      const shouldHideImage = Boolean(imageSource && isMeetSession && !session?.revealGranted);
 
       if (shouldHideImage && session) {
         session.pendingImages.set(messageId, {
-          imageUrl: payload.image,
+          imageUrl: imageSource,
           senderId: userId
         });
       }
@@ -780,7 +821,7 @@ io.on("connection", async (socket) => {
         text: String(payload?.text || ""),
         createdAt: payload?.createdAt || Date.now(),
         userId,
-        image: shouldHideImage ? null : payload?.image,
+        image: shouldHideImage ? imagePreview : imageSource,
         imagePending: shouldHideImage,
         replyTo: payload?.replyTo
       };
@@ -884,10 +925,16 @@ io.on("connection", async (socket) => {
           session.users.forEach((participantId) => {
             const participantSocketId = socketByUser.get(participantId);
             if (participantSocketId) {
-              io.to(participantSocketId).emit("reveal_granted", { images });
+              io.to(participantSocketId).emit("source_revealed", { images });
             }
           });
         }
+        session.users.forEach((participantId) => {
+          const participantSocketId = socketByUser.get(participantId);
+          if (participantSocketId) {
+            io.to(participantSocketId).emit("reveal_granted");
+          }
+        });
       }
     });
 
@@ -900,6 +947,7 @@ io.on("connection", async (socket) => {
       );
       if (!allowed) {
         socket.emit("rate_limit", { scope: "connect" });
+        socket.emit("rate_limit_reached", { scope: "connect" });
         return;
       }
       const partnerId = pairings.get(userId);
@@ -1090,6 +1138,24 @@ app.post(
   ensureAuth(redisClient),
   ensureAdmin,
   updateMaintenance(redisClient, io)
+);
+app.get(
+  "/api/admin/system-snapshot",
+  ensureAuth(redisClient),
+  ensureAdmin,
+  getSystemSnapshot(redisClient, {
+    getActiveMatches: async () => Math.floor(pairings.size / 2),
+    getQueueLength: async () => {
+      const [talk, meet] = await Promise.all([
+        redisClient.zCard(QUEUE_KEY_TALK),
+        redisClient.zCard(QUEUE_KEY_MEET)
+      ]);
+      return talk + meet;
+    },
+    getMediaCleanupStatus: async () => ({
+      ...mediaCleanupStatus
+    })
+  })
 );
 
 const startServer = async () => {
